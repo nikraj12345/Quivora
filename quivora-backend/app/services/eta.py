@@ -1,0 +1,230 @@
+from __future__ import annotations
+
+import statistics
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional, Tuple
+
+from sqlalchemy import select, func
+from sqlalchemy.orm import Session
+
+from app.models import (
+    Appointment,
+    AppointmentStatus,
+    DurationSample,
+    Prediction,
+    PRIORITY_RANK,
+)
+from app.services.age_bands import DEFAULT_DURATION_BY_BAND
+
+
+OUTLIER_CAP_SEC = 45 * 60  # for learning only
+
+
+def _avg(values: List[int]) -> Optional[float]:
+    if not values:
+        return None
+    return float(statistics.mean(values))
+
+
+def _query_durations(
+    db: Session,
+    doctor_id: int,
+    age_band: Optional[str],
+    since: Optional[datetime],
+    limit: int = 200,
+) -> List[int]:
+    q = select(DurationSample.duration_sec).where(DurationSample.doctor_id == doctor_id)
+    if age_band:
+        q = q.where(DurationSample.age_band == age_band)
+    if since:
+        q = q.where(DurationSample.created_at >= since)
+    q = q.order_by(DurationSample.created_at.desc()).limit(limit)
+    return [r[0] for r in db.execute(q).all()]
+
+
+def predict_duration_sec(
+    db: Session,
+    doctor_id: int,
+    age_band: str,
+    now: Optional[datetime] = None,
+) -> Tuple[int, float]:
+    """Weighted blend + confidence (minutes as float for ± band)."""
+    now = now or datetime.now(timezone.utc)
+    last_hour = _query_durations(db, doctor_id, age_band, now - timedelta(hours=1))
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today = _query_durations(db, doctor_id, age_band, today_start)
+    week = _query_durations(db, doctor_id, age_band, now - timedelta(days=7))
+    doctor_all = _query_durations(db, doctor_id, None, now - timedelta(days=7), limit=300)
+
+    buckets = [
+        (0.45, _avg(last_hour)),
+        (0.25, _avg(today)),
+        (0.20, _avg(week)),
+        (0.10, _avg(doctor_all)),
+    ]
+    weight_sum = 0.0
+    value_sum = 0.0
+    for w, v in buckets:
+        if v is not None:
+            weight_sum += w
+            value_sum += w * v
+
+    if weight_sum == 0:
+        pred = float(DEFAULT_DURATION_BY_BAND.get(age_band, 10 * 60))
+        confidence = 12.0
+    else:
+        pred = value_sum / weight_sum
+        recent = last_hour or today or week or doctor_all
+        if len(recent) >= 2:
+            confidence = max(5.0, min(20.0, statistics.pstdev(recent) / 60.0))
+        else:
+            confidence = 10.0
+
+    return int(round(pred)), confidence
+
+
+def remaining_for_in_progress(appt: Appointment, predicted: int, now: datetime) -> int:
+    if not appt.started_at:
+        return predicted
+    started = appt.started_at
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    elapsed = int((now - started).total_seconds())
+    return max(30, predicted - elapsed)  # at least 30s remaining guess
+
+
+def recompute_doctor_queue_etas(db: Session, doctor_id: int) -> None:
+    from app.models import Doctor as DoctorModel, SLOT_ORDER
+    doctor = db.get(DoctorModel, doctor_id)
+    doctor_live = doctor.is_live if doctor else False
+    active_slot = doctor.active_slot if doctor else None
+
+    now = datetime.now(timezone.utc)
+    appts = (
+        db.execute(
+            select(Appointment)
+            .where(
+                Appointment.doctor_id == doctor_id,
+                Appointment.status.in_(
+                    [
+                        AppointmentStatus.scheduled,
+                        AppointmentStatus.checked_in,
+                        AppointmentStatus.in_progress,
+                    ]
+                ),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # In-progress first, then priority, then token
+    appts = sorted(
+        appts,
+        key=lambda a: (
+            0 if a.status == AppointmentStatus.in_progress else 1,
+            PRIORITY_RANK.get(getattr(a, "priority", None) or "normal", 3),
+            a.token,
+        ),
+    )
+
+    # Group by slot — each slot is its own queue (preserve priority order within slot)
+    by_slot: dict[str, list] = {}
+    for appt in appts:
+        by_slot.setdefault(appt.slot or "morning", []).append(appt)
+
+    for slot, slot_appts in by_slot.items():
+        # ETAs when doctor is live for this slot (break adds extra wait, does not hide ETAs)
+        slot_live = doctor_live and (active_slot is None or active_slot == slot)
+        cumulative = 0
+        break_extra = 0
+        if doctor and doctor.is_on_break and doctor.break_started_at:
+            bs = doctor.break_started_at
+            if bs.tzinfo is None:
+                bs = bs.replace(tzinfo=timezone.utc)
+            break_extra = int((now - bs).total_seconds())
+        delay_extra = int(getattr(doctor, "delay_buffer_sec", 0) or 0) if doctor else 0
+
+        for appt in slot_appts:
+            pred, conf = predict_duration_sec(db, doctor_id, appt.age_band, now)
+            if appt.status == AppointmentStatus.in_progress:
+                wait = remaining_for_in_progress(appt, pred, now)
+                ahead = 0
+                eta_wait = wait
+            else:
+                ahead = 0
+                for a in slot_appts:
+                    if a.id == appt.id:
+                        break
+                    if a.status in (
+                        AppointmentStatus.scheduled,
+                        AppointmentStatus.checked_in,
+                        AppointmentStatus.in_progress,
+                    ):
+                        ahead += 1
+                eta_wait = cumulative
+
+            if appt.status != AppointmentStatus.in_progress:
+                eta_wait += break_extra + delay_extra
+
+            eta_at = (now + timedelta(seconds=eta_wait)) if slot_live else None
+            pred_row = db.execute(
+                select(Prediction).where(Prediction.appointment_id == appt.id)
+            ).scalar_one_or_none()
+            prev_ahead = pred_row.patients_ahead if pred_row else None
+            if not pred_row:
+                pred_row = Prediction(appointment_id=appt.id)
+                db.add(pred_row)
+            pred_row.eta_at = eta_at
+            pred_row.confidence_min = conf
+            pred_row.patients_ahead = ahead
+            pred_row.wait_seconds = eta_wait
+            pred_row.algorithm_version = "v1-weighted-slot"
+
+            if (slot_live
+                    and prev_ahead is not None
+                    and appt.status != AppointmentStatus.in_progress
+                    and appt.telegram_chat_id):
+                from app.services.telegram_bot import notify_almost_next, notify_next
+                doctor_name = doctor.name if doctor else "Doctor"
+                patient_name = appt.patient.name if appt.patient else "Patient"
+                service = f"{doctor_name} · {slot.capitalize()}"
+                # Prefer full label with timings when notifying
+                from app.models import SLOT_LABELS as _SL
+                service = f"{doctor_name} · {_SL.get(slot, slot.capitalize())}"
+                eta_time = eta_at.astimezone().strftime("%-I:%M %p") if eta_at else None
+
+                if ahead == 1 and prev_ahead > 1:
+                    notify_almost_next(appt.telegram_chat_id, patient_name, appt.token, service, eta_time)
+                elif ahead == 0 and prev_ahead > 0:
+                    notify_next(appt.telegram_chat_id, patient_name, appt.token, service, eta_time)
+
+            if appt.status == AppointmentStatus.in_progress:
+                cumulative = remaining_for_in_progress(appt, pred, now)
+            else:
+                cumulative += pred
+
+    db.commit()
+
+
+def record_duration_sample(
+    db: Session,
+    doctor_id: int,
+    age_band: str,
+    appointment_type: str,
+    duration_sec: int,
+    hour_of_day: int,
+    day_of_week: int,
+    source: str = "live",
+) -> DurationSample:
+    capped = min(max(duration_sec, 60), OUTLIER_CAP_SEC)
+    sample = DurationSample(
+        doctor_id=doctor_id,
+        age_band=age_band,
+        appointment_type=appointment_type,
+        duration_sec=capped,
+        hour_of_day=hour_of_day,
+        day_of_week=day_of_week,
+        source=source,
+    )
+    db.add(sample)
+    return sample

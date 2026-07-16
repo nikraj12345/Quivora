@@ -1,0 +1,41 @@
+# Quivora infra. Prefer dedicated containers when ports are free.
+# On this machine :5434 / :6379 may already be in use — app connects to
+# postgresql://quivora:quivora@localhost:5434/quivora and redis://localhost:6379/0
+# (create role/db on existing Postgres if needed).
+
+services:
+  db:
+    image: postgres:16
+    container_name: quivora-db
+    profiles: ["full"]
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: quivora
+      POSTGRES_PASSWORD: quivora
+      POSTGRES_DB: quivora
+    volumes:
+      - quivora_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quivora -d quivora"]
+      interval: 3s
+      timeout: 5s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    container_name: quivora-redis
+    profiles: ["full"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - quivora_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 15
+
+volumes:
+  quivora_pg:
+  quivora_redis:

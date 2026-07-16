@@ -1,0 +1,62 @@
+[
+  {
+    "external_id": "DOC-001",
+    "name": "Dr. Ananya Sharma",
+    "department": "General Medicine",
+    "pace": 1.0
+  },
+  {
+    "external_id": "DOC-002",
+    "name": "Dr. Rohan Mehta",
+    "department": "Pediatrics",
+    "pace": 0.75
+  },
+  {
+    "external_id": "DOC-003",
+    "name": "Dr. Priya Nair",
+    "department": "Cardiology",
+    "pace": 1.35
+  },
+  {
+    "external_id": "DOC-004",
+    "name": "Dr. Vikram Singh",
+    "department": "Orthopedics",
+    "pace": 1.15
+  },
+  {
+    "external_id": "DOC-005",
+    "name": "Dr. Sneha Kapoor",
+    "department": "Dermatology",
+    "pace": 0.85
+  },
+  {
+    "external_id": "DOC-006",
+    "name": "Dr. Arjun Reddy",
+    "department": "ENT",
+    "pace": 0.9
+  },
+  {
+    "external_id": "DOC-007",
+    "name": "Dr. Meera Iyer",
+    "department": "Gynecology",
+    "pace": 1.1
+  },
+  {
+    "external_id": "DOC-008",
+    "name": "Dr. Kabir Khan",
+    "department": "Neurology",
+    "pace": 1.4
+  },
+  {
+    "external_id": "DOC-009",
+    "name": "Dr. Ishita Bose",
+    "department": "Pulmonology",
+    "pace": 1.05
+  },
+  {
+    "external_id": "DOC-010",
+    "name": "Dr. Dev Patel",
+    "department": "General Surgery",
+    "pace": 1.2
+  }
+]
