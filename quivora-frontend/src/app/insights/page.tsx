@@ -36,7 +36,7 @@ function Empty({ children }: { children: React.ReactNode }) {
 }
 
 export default function InsightsPage() {
-  const { hospital, hospitalId, setMode } = useRole();
+  const { hospital, hospitalId, hospitals, setMode } = useRole();
   const [data, setData] = useState<HospitalInsights | null>(null);
   const [days, setDays] = useState(7);
   const [delayThreshold, setDelayThreshold] = useState(30);
@@ -113,9 +113,13 @@ export default function InsightsPage() {
 
   return (
     <Shell title="Quivora Insights" subtitle={data?.hospital_name || hospital?.name || "Hospital intelligence"}>
-      {!hid ? (
+      {!hid || (hospitals.length > 0 && !hospital) ? (
         <div className="card" style={{ padding: 32 }}>
-          <p style={{ color: "var(--muted)", margin: 0 }}>Select a hospital from the top-right switcher.</p>
+          <p style={{ color: "var(--muted)", margin: 0 }}>
+            {hospitals.length === 0
+              ? "No hospitals found. Run seed first, then pick a hospital from the top-right switcher."
+              : "Selected hospital is outdated (often after a reseed). Pick Quivora General Hospital from the top-right switcher."}
+          </p>
         </div>
       ) : (
         <div className={styles.page}>

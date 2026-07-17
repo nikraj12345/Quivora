@@ -51,11 +51,15 @@ export function RoleProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     const hs = await api.hospitals();
     setHospitals(hs);
-    if (!hospitalId && hs[0]) setHospitalIdState(hs[0].id);
-    const hid = hospitalId || hs[0]?.id;
+    // After reseed, old hospital IDs in localStorage no longer exist — fall back.
+    const stillValid = hospitalId != null && hs.some((h) => h.id === hospitalId);
+    const hid = stillValid ? hospitalId : (hs[0]?.id ?? null);
+    if (hid !== hospitalId) setHospitalIdState(hid);
     if (hid) {
       const ps = await api.patients(hid);
       setPatients(ps);
+    } else {
+      setPatients([]);
     }
   }, [hospitalId]);
 
