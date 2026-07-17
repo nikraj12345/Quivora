@@ -12,6 +12,7 @@ const NAV_ICONS: Record<string, string> = {
   "⌂": "⌂",
   "✚": "+",
   "▦": "▦",
+  "📊": "◈",
   "📋": "▤",
   "🩺": "◉",
   "🔬": "◎",
@@ -53,6 +54,7 @@ export function Shell({ children, title, subtitle }: { children: ReactNode; titl
         links: [
           { href: hid ? `/hospital/${hid}` : "/hospital", icon: "⌂", label: "Console" },
           { href: "/ops", icon: "▦", label: "Dashboard" },
+          { href: "/insights", icon: "📊", label: "Insights" },
           { href: "/register", icon: "✚", label: "Register" },
           { href: "/reception", icon: "📋", label: "Today's Board" },
           { href: "/opd", icon: "🩺", label: "OPD Board" },

@@ -5,6 +5,19 @@ from sqlalchemy import inspect, text
 from app.db import engine
 
 
+def ensure_hospital_columns() -> None:
+    insp = inspect(engine)
+    if "hospitals" not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns("hospitals")}
+    if "timezone" not in existing:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE hospitals ADD COLUMN timezone VARCHAR(64) "
+                "NOT NULL DEFAULT 'Asia/Kolkata'"
+            ))
+
+
 def ensure_doctor_columns() -> None:
     insp = inspect(engine)
     if "doctors" not in insp.get_table_names():
@@ -70,6 +83,7 @@ def ensure_patient_columns() -> None:
 
 
 def ensure_schema() -> None:
+    ensure_hospital_columns()
     ensure_doctor_columns()
     ensure_appointment_columns()
     ensure_patient_columns()

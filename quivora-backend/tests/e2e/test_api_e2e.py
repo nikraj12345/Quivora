@@ -208,3 +208,122 @@ def test_scan_queue_flow(client: httpx.Client):
     # check bootstrap samples were seeded
     m_detail = client.get(f"/v1/scans/machines/{ext}").json()
     assert m_detail["sample_count"] >= 100
+
+
+def test_hospital_insights_endpoint(client: httpx.Client):
+    hospitals = client.get("/v1/hospitals").json()
+    assert hospitals, "expected seeded hospitals"
+    hospital = hospitals[0]
+    hid = hospital["id"]
+
+    forbidden = client.get(f"/v1/hospitals/{hid}/insights")
+    assert forbidden.status_code in (401, 403)
+
+    bad_days = client.get(
+        f"/v1/hospitals/{hid}/insights?days=14",
+        headers=HEADERS,
+    )
+    assert bad_days.status_code == 400
+
+    r = client.get(
+        f"/v1/hospitals/{hid}/insights?days=7&delay_threshold_min=30",
+        headers=HEADERS,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    assert body["hospital_id"] == hid
+    assert body["hospital_name"]
+    assert body["range_days"] == 7
+    assert body["delay_threshold_min"] == 30
+
+    pulse = body["pulse"]
+    for key in (
+        "avg_wait_min",
+        "patients_seen",
+        "patients_waiting",
+        "no_show_rate_pct",
+        "priority_share_pct",
+        "longest_bottleneck",
+        "wait_source",
+        "wait_observations",
+    ):
+        assert key in pulse
+    assert pulse["wait_source"] in {"arrival-to-start", "current ETA", "unavailable"}
+    assert {"type", "name", "department", "queue", "wait_min"} <= set(pulse["longest_bottleneck"])
+
+    assert isinstance(body["recommendations"], list)
+    assert body["recommendations"], "expected at least one recommendation"
+    for rec in body["recommendations"]:
+        assert {"id", "severity", "category", "title", "evidence", "action"} <= set(rec)
+        assert rec["evidence"]
+        assert rec["action"]
+        assert rec["severity"] in {"critical", "warning", "opportunity", "info"}
+
+    assert isinstance(body["doctors"], list)
+    if body["doctors"]:
+        doctor = body["doctors"][0]
+        assert {
+            "patients_seen",
+            "avg_consult_min",
+            "department_avg_min",
+            "downstream_wait_min",
+            "break_events",
+            "delay_events",
+            "priority_mix",
+            "utilization_pct",
+        } <= set(doctor)
+
+    assert isinstance(body["machines"], list)
+    if body["machines"]:
+        machine = body["machines"][0]
+        assert {
+            "utilization_pct",
+            "avg_scan_min",
+            "utilization_by_hour",
+            "current_backlog",
+            "suggestion",
+        } <= set(machine)
+        assert len(machine["utilization_by_hour"]) == 12
+
+    heatmap = body["heatmap"]
+    assert "departments" in heatmap and "hours" in heatmap and "cells" in heatmap
+
+    fairness = body["fairness"]
+    for key in (
+        "patients_delayed",
+        "normal_patients_delayed",
+        "priority_overrides",
+        "returning_patient_ratio_pct",
+        "override_log",
+    ):
+        assert key in fairness
+
+    scoreboard = body["scoreboard"]
+    assert len(scoreboard) == 5
+    keys = {row["key"] for row in scoreboard}
+    assert keys == {
+        "wait_sla",
+        "doctor_load",
+        "machine_utilization",
+        "no_show",
+        "triage_fairness",
+    }
+    for row in scoreboard:
+        assert row["status"] in {"green", "amber", "red"}
+        assert row["explanation"]
+        assert row["action"]
+
+    quality = body["data_quality"]
+    assert "actual_wait_observations" in quality
+    assert "warnings" in quality
+
+    # also accept hospital external_id as hospital_ref
+    ext = hospital.get("external_id")
+    if ext:
+        by_ext = client.get(
+            f"/v1/hospitals/{ext}/insights?days=1",
+            headers=HEADERS,
+        )
+        assert by_ext.status_code == 200
+        assert by_ext.json()["range_days"] == 1

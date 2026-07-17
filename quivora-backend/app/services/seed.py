@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import json
 import random
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.models import (
     Appointment,
+    AppointmentStatus,
+    AppointmentType,
     Department,
     Doctor,
+    DoctorOpsEvent,
     DurationSample,
     Hospital,
     Patient,
@@ -21,6 +26,7 @@ from app.models import (
     ScanDurationSample,
     ScanMachine,
     ScanPrediction,
+    ScanStatus,
     ScanType,
     TrainJob,
 )
@@ -216,6 +222,7 @@ def seed_database(db: Session, reset: bool = True) -> Dict[str, Any]:
         db.execute(delete(QueueEvent))
         db.execute(delete(DurationSample))
         db.execute(delete(Appointment))
+        db.execute(delete(DoctorOpsEvent))
         db.execute(delete(TrainJob))
         db.execute(delete(Patient))
         db.execute(delete(Doctor))
@@ -355,3 +362,299 @@ def seed_database(db: Session, reset: bool = True) -> Dict[str, Any]:
 def load_training_json() -> Dict[str, Any]:
     generate_seed_files(force=False)
     return json.loads((SEED_DIR / "training_consults.json").read_text())
+
+
+def seed_insights_demo(db: Session, hospital: Hospital, days: int = 21) -> Dict[str, Any]:
+    """Create deterministic, timestamp-consistent operational history for Insights demos."""
+    prefix = f"INS-{hospital.external_id}"
+    existing = db.execute(
+        select(Appointment).where(
+            Appointment.hospital_id == hospital.id,
+            Appointment.external_id.like(f"{prefix}-%"),
+        )
+    ).scalars().all()
+    if existing:
+        return {
+            "hospital_id": hospital.id,
+            "appointments": len(existing),
+            "message": "Insights demo data already loaded",
+        }
+
+    doctors = db.execute(
+        select(Doctor).where(Doctor.hospital_id == hospital.id).order_by(Doctor.id)
+    ).scalars().all()
+    patients = db.execute(
+        select(Patient).where(Patient.hospital_id == hospital.id).order_by(Patient.id)
+    ).scalars().all()
+    machines = db.execute(
+        select(ScanMachine).where(ScanMachine.hospital_id == hospital.id).order_by(ScanMachine.id)
+    ).scalars().all()
+    if not doctors or not patients:
+        raise ValueError("Seed hospitals, doctors, and patients before Insights demo data")
+
+    try:
+        hospital_tz = ZoneInfo(getattr(hospital, "timezone", None) or "Asia/Kolkata")
+    except ZoneInfoNotFoundError:
+        hospital_tz = ZoneInfo("Asia/Kolkata")
+    now = datetime.now(timezone.utc)
+    local_now = now.astimezone(hospital_tz)
+    rng = random.Random(20260717 + hospital.id)
+
+    appointment_count = completed_count = no_show_count = 0
+    scan_count = completed_scan_count = 0
+    token_by_doctor: Dict[int, int] = {doctor.id: 0 for doctor in doctors}
+    patient_index = 0
+
+    # Historical OPD: realistic check-in, start and end timestamps.
+    for day_offset in range(days, 0, -1):
+        local_day = (local_now - timedelta(days=day_offset)).date()
+        if local_day.weekday() == 6:
+            continue
+        for doctor_index, doctor in enumerate(doctors):
+            daily_volume = 5 + ((day_offset + doctor_index) % 4)
+            pace = 0.78 + doctor_index * 0.09
+            for seq in range(daily_volume):
+                patient = patients[patient_index % len(patients)]
+                patient_index += 1
+                token_by_doctor[doctor.id] += 1
+                hour = 9 + min(7, seq + (2 if doctor_index % 3 == 0 else 0))
+                minute = (seq * 11 + doctor_index * 7) % 50
+                scheduled = datetime(
+                    local_day.year, local_day.month, local_day.day, hour, minute,
+                    tzinfo=hospital_tz,
+                ).astimezone(timezone.utc)
+                is_no_show = (seq + day_offset + doctor_index) % 11 == 0
+                is_emergency = seq == 0 and (day_offset + doctor_index) % 6 == 0
+                is_urgent = not is_emergency and (seq + doctor_index) % 9 == 0
+                is_senior = not is_emergency and not is_urgent and patient.age >= 60
+                priority = (
+                    "emergency" if is_emergency else
+                    "urgent" if is_urgent else
+                    "senior" if is_senior else
+                    "normal"
+                )
+                appt = Appointment(
+                    hospital_id=hospital.id,
+                    external_id=f"{prefix}-OPD-{day_offset:02d}-{doctor.id}-{seq:02d}",
+                    doctor_id=doctor.id,
+                    patient_id=patient.id,
+                    token=token_by_doctor[doctor.id],
+                    appointment_type=(
+                        AppointmentType.follow_up if (seq + day_offset) % 3 == 0
+                        else AppointmentType.new
+                    ),
+                    status=AppointmentStatus.no_show if is_no_show else AppointmentStatus.completed,
+                    age=patient.age,
+                    age_band=patient.age_band,
+                    slot="morning" if hour < 13 else "afternoon",
+                    priority=priority,
+                    priority_reason=(
+                        "Clinical emergency escalation" if is_emergency else
+                        "Nurse marked clinically urgent" if is_urgent else
+                        "Age-based senior priority" if is_senior else None
+                    ),
+                    scheduled_at=scheduled,
+                    created_at=scheduled - timedelta(hours=20),
+                )
+                db.add(appt)
+                db.flush()
+                appointment_count += 1
+
+                if is_no_show:
+                    no_show_at = scheduled + timedelta(minutes=25)
+                    db.add(QueueEvent(
+                        appointment_id=appt.id,
+                        event_type="no_show",
+                        note="Patient did not arrive",
+                        timestamp=no_show_at,
+                    ))
+                    no_show_count += 1
+                    continue
+
+                check_in = scheduled + timedelta(minutes=rng.randint(-5, 8))
+                peak_delay = 12 if 10 <= hour < 12 else 3
+                doctor_delay = int(doctor_index * 1.8)
+                wait_min = max(2, peak_delay + doctor_delay + rng.randint(-3, 8))
+                started = check_in + timedelta(minutes=wait_min)
+                consult_min = max(5, int((8 + (patient.age / 18) + rng.randint(-2, 4)) * pace))
+                ended = started + timedelta(minutes=consult_min)
+                appt.started_at = started
+                appt.ended_at = ended
+                db.add_all([
+                    QueueEvent(appointment_id=appt.id, event_type="checked_in", timestamp=check_in),
+                    QueueEvent(appointment_id=appt.id, event_type="started", timestamp=started),
+                    QueueEvent(appointment_id=appt.id, event_type="ended", timestamp=ended),
+                ])
+                if priority != "normal":
+                    db.add(QueueEvent(
+                        appointment_id=appt.id,
+                        event_type="priority_set",
+                        note=f"Initial triage: {priority}",
+                        timestamp=check_in,
+                    ))
+                if is_emergency:
+                    db.add(QueueEvent(
+                        appointment_id=appt.id,
+                        event_type="emergency_insert",
+                        note="Escalated after nurse assessment",
+                        timestamp=check_in + timedelta(minutes=2),
+                    ))
+                completed_count += 1
+
+    # Live OPD queue: generates current waits, bottlenecks and fairness metrics.
+    today = local_now.date()
+    for seq in range(min(18, len(patients))):
+        doctor = doctors[seq % min(4, len(doctors))]
+        patient = patients[(patient_index + seq) % len(patients)]
+        token_by_doctor[doctor.id] += 1
+        arrival = now - timedelta(minutes=8 + seq * 3)
+        priority = "emergency" if seq in {0, 9} else "senior" if patient.age >= 60 else "normal"
+        appt = Appointment(
+            hospital_id=hospital.id,
+            external_id=f"{prefix}-LIVE-{seq:03d}",
+            doctor_id=doctor.id,
+            patient_id=patient.id,
+            token=token_by_doctor[doctor.id],
+            appointment_type=AppointmentType.follow_up if seq % 4 == 0 else AppointmentType.new,
+            status=AppointmentStatus.checked_in,
+            age=patient.age,
+            age_band=patient.age_band,
+            slot="morning" if local_now.hour < 13 else "afternoon",
+            priority=priority,
+            priority_reason="Live emergency escalation" if priority == "emergency" else (
+                "Age-based senior priority" if priority == "senior" else None
+            ),
+            scheduled_at=arrival,
+            created_at=arrival - timedelta(hours=2),
+        )
+        db.add(appt)
+        db.flush()
+        wait_min = 8 + (seq % 6) * 9
+        db.add(QueueEvent(
+            appointment_id=appt.id,
+            event_type="checked_in",
+            timestamp=arrival,
+        ))
+        if priority == "emergency":
+            db.add_all([
+                QueueEvent(
+                    appointment_id=appt.id,
+                    event_type="priority_set",
+                    note="Initial triage: normal",
+                    timestamp=arrival,
+                ),
+                QueueEvent(
+                    appointment_id=appt.id,
+                    event_type="emergency_insert",
+                    note="Escalated from triage desk",
+                    timestamp=arrival + timedelta(minutes=1),
+                ),
+            ])
+        db.add(Prediction(
+            appointment_id=appt.id,
+            eta_at=now + timedelta(minutes=wait_min),
+            confidence_min=6.0,
+            patients_ahead=max(0, wait_min // 10),
+            wait_seconds=wait_min * 60,
+            algorithm_version="insights-demo",
+            updated_at=now,
+        ))
+        appointment_count += 1
+
+    for index, doctor in enumerate(doctors):
+        doctor.is_live = index < min(4, len(doctors))
+        doctor.active_slot = "morning" if local_now.hour < 13 else "afternoon"
+        for event_day in (3, 8, 13):
+            at = now - timedelta(days=event_day, hours=index % 3)
+            db.add(DoctorOpsEvent(
+                doctor_id=doctor.id,
+                event_type="break_start",
+                value_min=0,
+                timestamp=at,
+            ))
+            if (index + event_day) % 2 == 0:
+                db.add(DoctorOpsEvent(
+                    doctor_id=doctor.id,
+                    event_type="running_late",
+                    value_min=10 + (index % 3) * 5,
+                    timestamp=at + timedelta(hours=1),
+                ))
+
+    # Historical machine activity with intentionally different hourly demand.
+    if machines:
+        for day_offset in range(days, 0, -1):
+            local_day = (local_now - timedelta(days=day_offset)).date()
+            if local_day.weekday() == 6:
+                continue
+            for machine_index, machine in enumerate(machines):
+                base_min = {"mri": 32, "ct": 13, "xray": 6, "ultrasound": 19}.get(
+                    getattr(machine.scan_type, "value", str(machine.scan_type)), 12
+                )
+                daily_scans = 3 if "MRI" in machine.name else 5 + machine_index % 2
+                for seq in range(daily_scans):
+                    patient = patients[(patient_index + scan_count) % len(patients)]
+                    hour = 9 + seq * 2 + (machine_index % 2)
+                    scheduled = datetime(
+                        local_day.year, local_day.month, local_day.day, min(hour, 19),
+                        (seq * 7) % 45, tzinfo=hospital_tz,
+                    ).astimezone(timezone.utc)
+                    started = scheduled + timedelta(minutes=rng.randint(2, 14))
+                    duration = max(3, base_min + rng.randint(-3, 5))
+                    ended = started + timedelta(minutes=duration)
+                    scan = ScanAppointment(
+                        external_id=f"{prefix}-SCAN-{day_offset:02d}-{machine.id}-{seq:02d}",
+                        machine_id=machine.id,
+                        patient_id=patient.id,
+                        token=scan_count + 1,
+                        age=patient.age,
+                        age_band=patient.age_band,
+                        status=ScanStatus.completed,
+                        scheduled_at=scheduled,
+                        started_at=started,
+                        ended_at=ended,
+                        created_at=scheduled - timedelta(days=1),
+                    )
+                    db.add(scan)
+                    scan_count += 1
+                    completed_scan_count += 1
+
+        for seq in range(min(6, len(patients))):
+            machine = machines[seq % min(2, len(machines))]
+            patient = patients[(patient_index + seq + 30) % len(patients)]
+            scheduled = now - timedelta(minutes=10 + seq * 4)
+            scan = ScanAppointment(
+                external_id=f"{prefix}-SCAN-LIVE-{seq:02d}",
+                machine_id=machine.id,
+                patient_id=patient.id,
+                token=scan_count + 1,
+                age=patient.age,
+                age_band=patient.age_band,
+                status=ScanStatus.arrived,
+                scheduled_at=scheduled,
+                created_at=scheduled - timedelta(hours=1),
+            )
+            db.add(scan)
+            db.flush()
+            wait_min = 14 + seq * 8
+            db.add(ScanPrediction(
+                scan_appointment_id=scan.id,
+                eta_at=now + timedelta(minutes=wait_min),
+                confidence_min=7.0,
+                patients_ahead=seq // 2,
+                wait_seconds=wait_min * 60,
+                predicted_duration_sec=20 * 60,
+                updated_at=now,
+            ))
+            machine.is_live = True
+            scan_count += 1
+
+    db.commit()
+    return {
+        "hospital_id": hospital.id,
+        "appointments": appointment_count,
+        "completed_consultations": completed_count,
+        "no_shows": no_show_count,
+        "scans": scan_count,
+        "completed_scans": completed_scan_count,
+        "message": "Insights demo data loaded",
+    }

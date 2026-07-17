@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from sqlalchemy import func, select
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.models import (
-    Appointment, Department, Doctor, DurationSample, Hospital, Patient,
+    Appointment, Department, Doctor, DoctorOpsEvent, DurationSample, Hospital, Patient,
     Prediction, ScanAppointment, ScanDurationSample, ScanMachine,
     ScanPrediction, ScanStatus, TrainJob,
 )
@@ -29,6 +30,7 @@ from app.schemas import (
     HospitalOut,
     HospitalQrInfoOut,
     HospitalUpdate,
+    InsightsOut,
     OpdSummaryOut,
     PatientOut,
     PriorityUpdate,
@@ -49,10 +51,11 @@ from app.schemas import (
     TrainStatusOut,
 )
 from app.services.eta import predict_duration_sec, recompute_doctor_queue_etas
+from app.services.insights import build_hospital_insights
 from app.services.queue import apply_event, create_appointment
 from app.services.scan_eta import predict_scan_duration, record_scan_duration, recompute_scan_queue_etas
 from app.services.reception_board import build_reception_board, format_work_days, parse_work_days, works_today
-from app.services.seed import clear_bootstrap_samples, seed_database
+from app.services.seed import clear_bootstrap_samples, seed_database, seed_insights_demo
 from app.services.self_checkin import (
     checkin_url_for_hospital,
     find_patient_by_phone,
@@ -122,6 +125,7 @@ def _hospital_out(db: Session, h: Hospital) -> HospitalOut:
         city=h.city,
         address=getattr(h, "address", "") or "",
         phone=getattr(h, "phone", None),
+        timezone=getattr(h, "timezone", "Asia/Kolkata") or "Asia/Kolkata",
         is_active=getattr(h, "is_active", True),
         doctor_count=db.execute(select(func.count()).select_from(Doctor).where(Doctor.hospital_id == h.id)).scalar() or 0,
         patient_count=db.execute(select(func.count()).select_from(Patient).where(Patient.hospital_id == h.id)).scalar() or 0,
@@ -149,6 +153,10 @@ def get_hospital(hospital_ref: str, db: Session = Depends(get_db)):
 @router.post("/v1/hospitals", response_model=HospitalOut, dependencies=[Depends(require_api_key)])
 def create_hospital(body: HospitalCreate, db: Session = Depends(get_db)):
     import uuid
+    try:
+        ZoneInfo(body.timezone)
+    except ZoneInfoNotFoundError:
+        raise HTTPException(400, "Invalid IANA timezone")
     ext = body.external_id or f"HOSP-{uuid.uuid4().hex[:6].upper()}"
     existing = db.execute(select(Hospital).where(Hospital.external_id == ext)).scalar_one_or_none()
     if existing:
@@ -159,6 +167,7 @@ def create_hospital(body: HospitalCreate, db: Session = Depends(get_db)):
         city=body.city.strip(),
         address=(body.address or "").strip(),
         phone=body.phone,
+        timezone=body.timezone,
         is_active=True,
     )
     db.add(h)
@@ -183,6 +192,12 @@ def update_hospital(hospital_ref: str, body: HospitalUpdate, db: Session = Depen
         h.address = body.address.strip()
     if body.phone is not None:
         h.phone = body.phone
+    if body.timezone is not None:
+        try:
+            ZoneInfo(body.timezone)
+        except ZoneInfoNotFoundError:
+            raise HTTPException(400, "Invalid IANA timezone")
+        h.timezone = body.timezone
     if body.is_active is not None:
         h.is_active = body.is_active
     db.commit()
@@ -399,6 +414,20 @@ def seed(reset: bool = True, db: Session = Depends(get_db)):
     return SeedResponse(**result)
 
 
+@router.post(
+    "/v1/admin/seed-insights/{hospital_ref}",
+    dependencies=[Depends(require_api_key)],
+)
+def seed_insights(hospital_ref: str, days: int = 21, db: Session = Depends(get_db)):
+    if not 7 <= days <= 90:
+        raise HTTPException(400, "days must be between 7 and 90")
+    hospital = _resolve_hospital(hospital_ref, db)
+    try:
+        return seed_insights_demo(db, hospital, days=days)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 def _doctor_out(db: Session, d: Doctor) -> DoctorOut:
     cnt = db.execute(
         select(func.count()).select_from(DurationSample).where(DurationSample.doctor_id == d.id)
@@ -534,6 +563,7 @@ def go_live(doctor_ref: str, slot: Optional[str] = None, db: Session = Depends(g
     d.delay_buffer_sec = 0
     d.active_slot = active
     d.went_live_at = datetime.now(timezone.utc)
+    db.add(DoctorOpsEvent(doctor_id=d.id, event_type="go_live", timestamp=d.went_live_at))
     db.commit()
     db.refresh(d)
 
@@ -576,6 +606,25 @@ def reception_board(hospital_ref: str, db: Session = Depends(get_db)):
     return build_reception_board(db, h.id, h.name)
 
 
+@router.get(
+    "/v1/hospitals/{hospital_ref}/insights",
+    response_model=InsightsOut,
+    dependencies=[Depends(require_api_key)],
+)
+def hospital_insights(
+    hospital_ref: str,
+    days: int = 7,
+    delay_threshold_min: int = 30,
+    db: Session = Depends(get_db),
+):
+    if days not in (1, 7, 30, 90):
+        raise HTTPException(400, "days must be 1, 7, 30, or 90")
+    if not 5 <= delay_threshold_min <= 180:
+        raise HTTPException(400, "delay_threshold_min must be between 5 and 180")
+    h = _resolve_hospital(hospital_ref, db)
+    return build_hospital_insights(db, h, days=days, delay_threshold_min=delay_threshold_min)
+
+
 def _waiting_in_active_slot(db: Session, d: Doctor):
     from app.models import AppointmentStatus
     active = d.active_slot or "morning"
@@ -603,6 +652,7 @@ def start_break(doctor_ref: str, db: Session = Depends(get_db)):
         raise HTTPException(400, "Already on break")
     d.is_on_break = True
     d.break_started_at = datetime.now(timezone.utc)
+    db.add(DoctorOpsEvent(doctor_id=d.id, event_type="break_start", timestamp=d.break_started_at))
     db.commit()
     db.refresh(d)
     recompute_doctor_queue_etas(db, d.id)
@@ -614,14 +664,26 @@ def start_break(doctor_ref: str, db: Session = Depends(get_db)):
 
 @router.post("/v1/doctors/{doctor_ref}/break/end", response_model=DoctorOut, dependencies=[Depends(require_api_key)])
 def end_break(doctor_ref: str, db: Session = Depends(get_db)):
+    from datetime import datetime, timezone
     from app.services.telegram_bot import notify_break_ended
     from app.models import Prediction
 
     d = _resolve_doctor(doctor_ref, db)
     if not d.is_on_break:
         raise HTTPException(400, "Doctor is not on break")
+    now = datetime.now(timezone.utc)
+    started = d.break_started_at
+    if started and started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    break_min = max(0, int((now - started).total_seconds() // 60)) if started else 0
     d.is_on_break = False
     d.break_started_at = None
+    db.add(DoctorOpsEvent(
+        doctor_id=d.id,
+        event_type="break_end",
+        value_min=break_min,
+        timestamp=now,
+    ))
     db.commit()
     db.refresh(d)
     recompute_doctor_queue_etas(db, d.id)
@@ -644,6 +706,7 @@ def running_late(doctor_ref: str, body: RunningLateBody, db: Session = Depends(g
         raise HTTPException(400, "Doctor must be live to broadcast running late")
     extra = body.minutes * 60
     d.delay_buffer_sec = int(getattr(d, "delay_buffer_sec", 0) or 0) + extra
+    db.add(DoctorOpsEvent(doctor_id=d.id, event_type="running_late", value_min=body.minutes))
     db.commit()
     db.refresh(d)
     recompute_doctor_queue_etas(db, d.id)
@@ -659,6 +722,7 @@ def running_late(doctor_ref: str, body: RunningLateBody, db: Session = Depends(g
 @router.post("/v1/doctors/{doctor_ref}/go-offline", response_model=DoctorOut, dependencies=[Depends(require_api_key)])
 def go_offline(doctor_ref: str, db: Session = Depends(get_db)):
     d = _resolve_doctor(doctor_ref, db)
+    db.add(DoctorOpsEvent(doctor_id=d.id, event_type="go_offline"))
     d.is_live = False
     d.active_slot = None
     d.is_on_break = False

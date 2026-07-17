@@ -20,6 +20,7 @@ export type Hospital = {
   city: string;
   address?: string;
   phone?: string | null;
+  timezone?: string;
   is_active?: boolean;
   doctor_count?: number;
   patient_count?: number;
@@ -183,6 +184,120 @@ export type OpdSummary = {
   total_samples: number;
 };
 
+export type InsightStatus = "green" | "amber" | "red";
+
+export type HospitalInsights = {
+  hospital_id: number;
+  hospital_name: string;
+  generated_at: string;
+  range_days: number;
+  delay_threshold_min: number;
+  pulse: {
+    avg_wait_min: number;
+    patients_seen: number;
+    patients_waiting: number;
+    no_show_rate_pct: number;
+    no_show_count: number;
+    priority_share_pct: number;
+    priority_count: number;
+    longest_bottleneck: {
+      type: string;
+      name: string;
+      department: string;
+      queue: number;
+      wait_min: number;
+    };
+    wait_source: "arrival-to-start" | "current ETA" | "unavailable";
+    wait_observations: number;
+  };
+  recommendations: Array<{
+    id: string;
+    severity: "critical" | "warning" | "opportunity" | "info";
+    category: string;
+    title: string;
+    evidence: string;
+    action: string;
+  }>;
+  doctors: Array<{
+    id: number;
+    external_id: string;
+    name: string;
+    department: string;
+    patients_seen: number;
+    patients_per_day: number;
+    avg_consult_min: number;
+    department_avg_min: number;
+    variance_vs_department_pct: number;
+    downstream_wait_min: number;
+    break_events: number;
+    delay_events: number;
+    delay_minutes: number;
+    priority_mix: Record<"emergency" | "senior" | "urgent" | "normal", number>;
+    utilization_pct: number;
+    queue_now: number;
+    is_live: boolean;
+    is_on_break: boolean;
+    data_source: string;
+    consult_observations: number;
+  }>;
+  machines: Array<{
+    id: number;
+    external_id: string;
+    name: string;
+    scan_type: string;
+    is_live: boolean;
+    completed_scans: number;
+    avg_scan_min: number;
+    utilization_pct: number;
+    utilization_by_hour: Array<{ hour: number; utilization_pct: number }>;
+    current_backlog: number;
+    historical_peak_backlog: number;
+    avg_idle_gap_min: number;
+    max_idle_gap_min: number;
+    suggestion: string;
+    data_source: string;
+  }>;
+  heatmap: {
+    departments: string[];
+    hours: number[];
+    cells: Array<{ department: string; hour: number; count: number }>;
+    max_count: number;
+  };
+  fairness: {
+    delayed_threshold_min: number;
+    patients_delayed: number;
+    normal_patients_delayed: number;
+    normal_delayed_rate_pct: number;
+    priority_overrides: number;
+    emergency_inserts: number;
+    returning_patients: number;
+    new_patients: number;
+    returning_patient_ratio_pct: number;
+    override_log: Array<{
+      timestamp: string;
+      event_type: string;
+      patient_name: string;
+      doctor_name: string;
+      priority: string;
+      reason: string;
+    }>;
+  };
+  scoreboard: Array<{
+    key: string;
+    label: string;
+    status: InsightStatus;
+    value: string;
+    explanation: string;
+    action: string;
+  }>;
+  data_quality: {
+    actual_wait_observations: number;
+    live_doctor_samples: number;
+    completed_live_scans: number;
+    warnings: string[];
+  };
+};
+
 export type ScanMachine = {
   id: number;
   external_id: string;
@@ -242,9 +357,9 @@ export const api = {
   opdSummary: () => request<OpdSummary>("/v1/opd/summary"),
   hospitals: () => request<Hospital[]>("/v1/hospitals"),
   hospital: (ref: string | number) => request<Hospital>(`/v1/hospitals/${ref}`),
-  createHospital: (body: { name: string; city: string; address?: string; phone?: string; external_id?: string }) =>
+  createHospital: (body: { name: string; city: string; address?: string; phone?: string; timezone?: string; external_id?: string }) =>
     request<Hospital>("/v1/hospitals", { method: "POST", body: JSON.stringify(body) }),
-  updateHospital: (ref: string | number, body: Partial<{ name: string; city: string; address: string; phone: string; is_active: boolean }>) =>
+  updateHospital: (ref: string | number, body: Partial<{ name: string; city: string; address: string; phone: string; timezone: string; is_active: boolean }>) =>
     request<Hospital>(`/v1/hospitals/${ref}`, { method: "PATCH", body: JSON.stringify(body) }),
   searchPatients: (q: string, hospital_id?: number) =>
     request<PatientRecord[]>(`/v1/patients/search?q=${encodeURIComponent(q)}${hospital_id ? `&hospital_id=${hospital_id}` : ""}`),
@@ -262,6 +377,10 @@ export const api = {
     request<Doctor>(`/v1/doctors/${ref}/running-late`, { method: "POST", body: JSON.stringify({ minutes }) }),
   receptionBoard: (hospitalRef: string | number) =>
     request<ReceptionBoard>(`/v1/hospitals/${hospitalRef}/reception-board`),
+  insights: (hospitalRef: string | number, days = 7, delayThresholdMin = 30) =>
+    request<HospitalInsights>(
+      `/v1/hospitals/${hospitalRef}/insights?days=${days}&delay_threshold_min=${delayThresholdMin}`
+    ),
   departments: (hospitalRef: string | number) =>
     request<Department[]>(`/v1/hospitals/${hospitalRef}/departments`),
   createDepartment: (hospitalRef: string | number, name: string) =>

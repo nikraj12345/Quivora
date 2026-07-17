@@ -106,6 +106,9 @@ class Hospital(Base):
     city: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     address: Mapped[str] = mapped_column(String(300), nullable=False, default="")
     phone: Mapped[Optional[str]] = mapped_column(String(32))
+    timezone: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="Asia/Kolkata", server_default="Asia/Kolkata"
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -153,6 +156,19 @@ class Doctor(Base):
     hospital: Mapped[Hospital] = relationship(back_populates="doctors")
     appointments: Mapped[list["Appointment"]] = relationship(back_populates="doctor")
     duration_samples: Mapped[list["DurationSample"]] = relationship(back_populates="doctor")
+
+
+class DoctorOpsEvent(Base):
+    """Operational events used for break/delay analytics going forward."""
+    __tablename__ = "doctor_ops_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    doctor_id: Mapped[int] = mapped_column(ForeignKey("doctors.id"), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    value_min: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    doctor: Mapped[Doctor] = relationship()
 
 
 class Patient(Base):

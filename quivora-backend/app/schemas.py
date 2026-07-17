@@ -13,6 +13,7 @@ class HospitalOut(BaseModel):
     city: str
     address: str = ""
     phone: Optional[str] = None
+    timezone: str = "Asia/Kolkata"
     is_active: bool = True
     doctor_count: int = 0
     patient_count: int = 0
@@ -27,6 +28,7 @@ class HospitalCreate(BaseModel):
     city: str
     address: str = ""
     phone: Optional[str] = None
+    timezone: str = "Asia/Kolkata"
     external_id: Optional[str] = None
 
 
@@ -35,6 +37,7 @@ class HospitalUpdate(BaseModel):
     city: Optional[str] = None
     address: Optional[str] = None
     phone: Optional[str] = None
+    timezone: Optional[str] = None
     is_active: Optional[bool] = None
 
 
@@ -222,6 +225,22 @@ class ReceptionBoardOut(BaseModel):
     generated_at: datetime
     summary: Dict[str, int]
     doctors: List[ReceptionDoctorRow]
+
+
+class InsightsOut(BaseModel):
+    hospital_id: int
+    hospital_name: str
+    generated_at: datetime
+    range_days: int
+    delay_threshold_min: int
+    pulse: Dict[str, Any]
+    recommendations: List[Dict[str, Any]]
+    doctors: List[Dict[str, Any]]
+    machines: List[Dict[str, Any]]
+    heatmap: Dict[str, Any]
+    fairness: Dict[str, Any]
+    scoreboard: List[Dict[str, Any]]
+    data_quality: Dict[str, Any]
 
 
 class QueueItemOut(BaseModel):

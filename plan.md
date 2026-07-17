@@ -517,3 +517,69 @@ cd quivora-frontend && npm run dev
 E2E: `./scripts/run-e2e.sh`
 
 **Note:** If ports 5434/6379 are already in use, Quivora uses the existing Postgres/Redis instances (create `quivora` DB + role as in README).
+
+---
+
+## 18. Recommended feature: `/insights` (Hospital Admin)
+
+Quivora Insights should help hospital administrators understand what is happening, identify operational bottlenecks, and know what to improve across doctors, departments, queues, and diagnostic machines.
+
+### 18.1 Today’s pulse (top cards)
+
+- Average patient wait time
+- Patients seen / still waiting
+- No-show rate
+- Emergency / urgent share
+- Longest current bottleneck (doctor or machine)
+
+### 18.2 Actionable recommendations (the “wow”)
+
+Generate concise, evidence-backed operational recommendations from Quivora’s live and historical data. Examples:
+
+- “Cardiology peak 10–12 AM — add afternoon slot or second room.”
+- “Dr. Priya avg consult 18 min vs department 11 min — ETA drift risk.”
+- “MRI idle 40% after 3 PM — shift bookings later.”
+- “Senior priority is 28% of queue — protect 2 morning slots.”
+- “No-show rate 14% on Monday mornings — send Telegram reminders earlier.”
+
+Recommendations must show the metric or pattern that triggered them and should avoid presenting unsupported conclusions.
+
+### 18.3 Doctor insights
+
+For each doctor:
+
+- Patients seen per day
+- Average consultation time vs department average
+- Wait time created for downstream patients
+- Break and delay frequency
+- Priority mix handled
+- Utilization percentage (live/consulting time vs available scheduled time)
+
+### 18.4 Machine / scan insights
+
+For each MRI, CT, X-ray, ultrasound, or other diagnostic machine:
+
+- Utilization by hour
+- Average scan duration
+- Current and historical queue backlog
+- Idle gaps
+- Suggested slot redistribution
+
+### 18.5 Flow & fairness
+
+- Peak-hour heatmap (hour × department)
+- Priority override log, including warnings when repeated emergencies significantly delay normal patients
+- Patients delayed beyond a configurable threshold
+- Returning vs new patient ratio
+
+### 18.6 Improvement scoreboard
+
+Display a simple red / amber / green status for:
+
+- Wait-time SLA
+- Doctor load balance
+- Machine utilization
+- No-show control
+- Triage fairness
+
+Each status must include a short explanation, the underlying metric, and a suggested next action.

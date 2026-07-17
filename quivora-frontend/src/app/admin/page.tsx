@@ -13,6 +13,7 @@ export default function AdminPage() {
   const [city, setCity] = useState("");
   const [address, setAddress] = useState("");
   const [phone, setPhone] = useState("");
+  const [timezone, setTimezone] = useState("Asia/Kolkata");
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState("");
 
@@ -27,7 +28,7 @@ export default function AdminPage() {
     if (!name.trim() || !city.trim()) { setMsg("Name and city are required"); return; }
     setLoading(true); setMsg("");
     try {
-      const h = await api.createHospital({ name: name.trim(), city: city.trim(), address, phone: phone || undefined });
+      const h = await api.createHospital({ name: name.trim(), city: city.trim(), address, phone: phone || undefined, timezone });
       setName(""); setCity(""); setAddress(""); setPhone("");
       await load();
       await refresh();
@@ -63,7 +64,7 @@ export default function AdminPage() {
                     </span>
                   </div>
                   <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 3 }}>
-                    {h.city}{h.address ? ` · ${h.address}` : ""}{h.phone ? ` · ${h.phone}` : ""}
+                    {h.city}{h.address ? ` · ${h.address}` : ""}{h.phone ? ` · ${h.phone}` : ""}{h.timezone ? ` · ${h.timezone}` : ""}
                   </div>
                   <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 4 }}>
                     {h.doctor_count ?? 0} doctors · {h.patient_count ?? 0} patients · {h.machine_count ?? 0} machines
@@ -100,6 +101,17 @@ export default function AdminPage() {
             </label>
             <label className="input-label">Phone
               <input className="input" style={{ marginTop: 4 }} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+91 …" />
+            </label>
+            <label className="input-label">Timezone
+              <select className="input" style={{ marginTop: 4 }} value={timezone} onChange={(e) => setTimezone(e.target.value)}>
+                <option value="Asia/Kolkata">India — Asia/Kolkata</option>
+                <option value="Asia/Dubai">UAE — Asia/Dubai</option>
+                <option value="Europe/London">UK — Europe/London</option>
+                <option value="America/New_York">US Eastern — America/New_York</option>
+                <option value="America/Chicago">US Central — America/Chicago</option>
+                <option value="America/Los_Angeles">US Pacific — America/Los_Angeles</option>
+                <option value="UTC">UTC</option>
+              </select>
             </label>
             {msg && <p style={{ fontSize: 12, color: msg.startsWith("Created") ? "var(--ok)" : "var(--err)" }}>{msg}</p>}
             <button className="btn btn-primary" disabled={loading} onClick={create}>

@@ -83,6 +83,7 @@ export default function OperationsDashboardPage() {
           <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
             {[
               { href: hospitalId ? `/hospital/${hospitalId}` : "/hospital", icon: "⌂", label: "Hospital console", desc: "Doctors, slots & availability", onClick: () => { setMode("hospital"); } },
+              { href: "/insights", icon: "📊", label: "Insights", desc: "Pulse, recommendations, doctor & machine intelligence" },
               { href: "/reception", icon: "📋", label: "Today's Board", desc: "Live overview of all doctors and queues" },
               { href: "/register", icon: "✚", label: "Register / book patient", desc: "Search returning patients or create new" },
               { href: "/opd", icon: "🩺", label: "OPD live board", desc: "Queue depths and ETAs by doctor" },
