@@ -64,6 +64,21 @@ def test_seed_doctors_and_patients(client: httpx.Client):
     assert isinstance(search, list)
 
 
+def test_opd_summary_can_be_scoped_to_hospital(client: httpx.Client):
+    hospitals = client.get("/v1/hospitals").json()
+    hospital_id = hospitals[0]["id"]
+    doctors = client.get(f"/v1/doctors?hospital_id={hospital_id}").json()
+
+    scoped = client.get(f"/v1/opd/summary?hospital_id={hospital_id}")
+    assert scoped.status_code == 200
+    body = scoped.json()
+    assert body["total_doctors"] == len(doctors)
+    assert body["live_doctors"] <= body["total_doctors"]
+
+    global_summary = client.get("/v1/opd/summary").json()
+    assert global_summary["total_doctors"] >= body["total_doctors"]
+
+
 def test_bootstrap_training_100_per_doctor(client: httpx.Client):
     client.post("/v1/admin/seed?reset=true", headers=HEADERS)
 

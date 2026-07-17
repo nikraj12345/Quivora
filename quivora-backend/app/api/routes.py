@@ -377,27 +377,64 @@ def list_patients(hospital_id: Optional[int] = None, limit: int = 50, db: Sessio
 
 
 @router.get("/v1/opd/summary", response_model=OpdSummaryOut)
-def opd_summary(db: Session = Depends(get_db)):
-    from datetime import date, datetime, timezone
+def opd_summary(hospital_id: Optional[int] = None, db: Session = Depends(get_db)):
+    from datetime import datetime, timezone
     from app.models import AppointmentStatus
 
-    total_doctors = db.execute(select(func.count()).select_from(Doctor)).scalar() or 0
-    live_doctors = db.execute(select(func.count()).select_from(Doctor).where(Doctor.is_live == True)).scalar() or 0  # noqa: E712
-
-    active_statuses = [AppointmentStatus.scheduled, AppointmentStatus.checked_in, AppointmentStatus.in_progress]
-    patients_in_queue = db.execute(
-        select(func.count()).select_from(Appointment).where(Appointment.status.in_(active_statuses))
+    doctor_filters = [Doctor.hospital_id == hospital_id] if hospital_id else []
+    total_doctors = db.execute(
+        select(func.count()).select_from(Doctor).where(*doctor_filters)
     ).scalar() or 0
-
-    today_start = datetime.combine(date.today(), datetime.min.time()).replace(tzinfo=timezone.utc)
-    consultations_today = db.execute(
-        select(func.count()).select_from(DurationSample).where(
-            DurationSample.source == "live",
-            DurationSample.created_at >= today_start,
+    live_doctors = db.execute(
+        select(func.count()).select_from(Doctor).where(
+            Doctor.is_live == True,  # noqa: E712
+            *doctor_filters,
         )
     ).scalar() or 0
 
-    total_samples = db.execute(select(func.count()).select_from(DurationSample)).scalar() or 0
+    active_statuses = [AppointmentStatus.scheduled, AppointmentStatus.checked_in, AppointmentStatus.in_progress]
+    appointment_filters = [Appointment.hospital_id == hospital_id] if hospital_id else []
+    patients_in_queue = db.execute(
+        select(func.count()).select_from(Appointment).where(
+            Appointment.status.in_(active_statuses),
+            *appointment_filters,
+        )
+    ).scalar() or 0
+
+    summary_tz = ZoneInfo("UTC")
+    if hospital_id:
+        summary_hospital = db.get(Hospital, hospital_id)
+        if summary_hospital:
+            try:
+                summary_tz = ZoneInfo(summary_hospital.timezone or "Asia/Kolkata")
+            except ZoneInfoNotFoundError:
+                summary_tz = ZoneInfo("UTC")
+    today_start = (
+        datetime.now(timezone.utc)
+        .astimezone(summary_tz)
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .astimezone(timezone.utc)
+    )
+    consultation_stmt = (
+        select(func.count())
+        .select_from(Appointment)
+        .where(
+            Appointment.status == AppointmentStatus.completed,
+            Appointment.ended_at >= today_start,
+        )
+    )
+    if hospital_id:
+        consultation_stmt = consultation_stmt.where(Appointment.hospital_id == hospital_id)
+    consultations_today = db.execute(consultation_stmt).scalar() or 0
+
+    samples_stmt = (
+        select(func.count())
+        .select_from(DurationSample)
+        .join(Doctor, DurationSample.doctor_id == Doctor.id)
+    )
+    if hospital_id:
+        samples_stmt = samples_stmt.where(Doctor.hospital_id == hospital_id)
+    total_samples = db.execute(samples_stmt).scalar() or 0
 
     return OpdSummaryOut(
         live_doctors=int(live_doctors),

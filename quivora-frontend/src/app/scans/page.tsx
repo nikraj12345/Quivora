@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Shell } from "@/components/Shell";
-import { api, Hospital, ScanMachine, ScanQueueItem } from "@/lib/api";
+import { api, ScanMachine, ScanQueueItem } from "@/lib/api";
+import { useRole } from "@/lib/role";
 
 const SCAN_LABELS: Record<string, { label: string; color: string }> = {
   mri:        { label: "MRI",        color: "#7c3aed" },
@@ -71,49 +72,53 @@ function MachineCard({ machine, queue }: { machine: ScanMachine; queue: ScanQueu
 }
 
 export default function ScansPage() {
-  const [hospitals, setHospitals] = useState<Hospital[]>([]);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const { hospital, hospitalId, setMode } = useRole();
   const [machines, setMachines] = useState<ScanMachine[]>([]);
   const [queues, setQueues] = useState<Record<string, ScanQueueItem[]>>({});
+  const selectedId = hospitalId || hospital?.id || null;
+
+  useEffect(() => { setMode("hospital"); }, [setMode]);
 
   useEffect(() => {
-    api.hospitals().then((hs) => { setHospitals(hs); if (hs[0]) setSelectedId(hs[0].id); });
-  }, []);
-
-  useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedId) {
+      setMachines([]);
+      setQueues({});
+      return;
+    }
+    setMachines([]);
+    setQueues({});
+    let cancelled = false;
     const load = async () => {
-      const ms = await api.scanMachines(selectedId);
-      setMachines(ms);
-      const q: Record<string, ScanQueueItem[]> = {};
-      await Promise.all(ms.map(async (m) => { q[m.external_id] = await api.scanQueue(m.external_id); }));
-      setQueues(q);
+      try {
+        const ms = await api.scanMachines(selectedId);
+        const entries = await Promise.all(
+          ms.map(async (m) => [m.external_id, await api.scanQueue(m.external_id)] as const)
+        );
+        if (cancelled) return;
+        setMachines(ms);
+        setQueues(Object.fromEntries(entries));
+      } catch {
+        if (!cancelled) {
+          setMachines([]);
+          setQueues({});
+        }
+      }
     };
     load();
     const t = setInterval(load, 8000);
-    return () => clearInterval(t);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
   }, [selectedId]);
 
   const liveCount = machines.filter((m) => m.is_live).length;
-  const sel = hospitals.find((h) => h.id === selectedId);
 
   // Group by scan type for display
   const scanTypes = [...new Set(machines.map((m) => m.scan_type))];
 
   return (
-    <Shell title="Scans Board" subtitle={sel ? `${sel.name} · ${sel.city}` : ""}>
-      {/* Hospital tabs */}
-      <div style={{ marginBottom: 20, overflowX: "auto" }}>
-        <div className="tab-bar" style={{ display: "inline-flex" }}>
-          {hospitals.map((h) => (
-            <button key={h.id} className={`tab-btn ${selectedId === h.id ? "active" : ""}`} onClick={() => setSelectedId(h.id)}>
-              {h.name.replace("Quivora ", "")}
-              <span style={{ opacity: 0.65, fontWeight: 400 }}> · {h.city}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
+    <Shell title="Manage Scans" subtitle={hospital ? `${hospital.name} · ${hospital.city}` : "Select a hospital"}>
       {/* Summary */}
       <div style={{ display: "flex", gap: 20, marginBottom: 20 }}>
         <span style={{ fontSize: 13, color: "var(--muted)" }}>

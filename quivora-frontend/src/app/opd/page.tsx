@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Shell } from "@/components/Shell";
-import { api, Doctor, Hospital, QueueItem } from "@/lib/api";
+import { api, Doctor, QueueItem } from "@/lib/api";
+import { useRole } from "@/lib/role";
 import { formatSlotsList, slotShort } from "@/lib/slots";
 
 function fmt(iso: string | null) {
@@ -79,47 +80,51 @@ function DoctorCard({ doc, queue }: { doc: Doctor; queue: QueueItem[] }) {
 }
 
 export default function OpdPage() {
-  const [hospitals, setHospitals] = useState<Hospital[]>([]);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const { hospital, hospitalId, setMode } = useRole();
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [queues, setQueues] = useState<Record<string, QueueItem[]>>({});
+  const selectedId = hospitalId || hospital?.id || null;
+
+  useEffect(() => { setMode("hospital"); }, [setMode]);
 
   useEffect(() => {
-    api.hospitals().then((hs) => { setHospitals(hs); if (hs[0]) setSelectedId(hs[0].id); });
-  }, []);
-
-  useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedId) {
+      setDoctors([]);
+      setQueues({});
+      return;
+    }
+    setDoctors([]);
+    setQueues({});
+    let cancelled = false;
     const load = async () => {
-      const docs = await api.doctors(selectedId);
-      setDoctors(docs);
-      const q: Record<string, QueueItem[]> = {};
-      await Promise.all(docs.map(async (d) => { q[d.external_id] = await api.queue(d.external_id); }));
-      setQueues(q);
+      try {
+        const docs = await api.doctors(selectedId);
+        const entries = await Promise.all(
+          docs.map(async (d) => [d.external_id, await api.queue(d.external_id)] as const)
+        );
+        if (cancelled) return;
+        setDoctors(docs);
+        setQueues(Object.fromEntries(entries));
+      } catch {
+        if (!cancelled) {
+          setDoctors([]);
+          setQueues({});
+        }
+      }
     };
     load();
     const t = setInterval(load, 8000);
-    return () => clearInterval(t);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
   }, [selectedId]);
 
   const liveCount = doctors.filter((d) => d.is_live).length;
   const totalInQueue = Object.values(queues).reduce((s, q) => s + q.length, 0);
-  const sel = hospitals.find((h) => h.id === selectedId);
 
   return (
-    <Shell title="OPD Board" subtitle={sel ? `${sel.name} · ${sel.city}` : ""}>
-      {/* Hospital tab bar */}
-      <div style={{ marginBottom: 20, overflowX: "auto" }}>
-        <div className="tab-bar" style={{ display: "inline-flex" }}>
-          {hospitals.map((h) => (
-            <button key={h.id} className={`tab-btn ${selectedId === h.id ? "active" : ""}`} onClick={() => setSelectedId(h.id)}>
-              {h.name.replace("Quivora ", "")}
-              <span style={{ opacity: 0.65, fontWeight: 400 }}> · {h.city}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
+    <Shell title="OPD Board" subtitle={hospital ? `${hospital.name} · ${hospital.city}` : "Select a hospital"}>
       {/* Summary bar */}
       <div style={{ display: "flex", gap: 20, marginBottom: 20, flexWrap: "wrap" }}>
         <span style={{ fontSize: 13, color: "var(--muted)" }}>

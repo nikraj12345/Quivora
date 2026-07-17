@@ -21,7 +21,7 @@ const NAV_ICONS: Record<string, string> = {
 
 export function Shell({ children, title, subtitle }: { children: ReactNode; title?: string; subtitle?: string }) {
   const pathname = usePathname();
-  const { mode, hospital, hospitalId } = useRole();
+  const { mode, hospital, hospitalId, doctor } = useRole();
 
   const sections = useMemo(() => {
     if (mode === "admin") {
@@ -41,8 +41,21 @@ export function Shell({ children, title, subtitle }: { children: ReactNode; titl
           label: "Patient",
           links: [
             { href: "/patient-portal", icon: "⌂", label: "My care" },
-            { href: "/checkin", icon: "✚", label: "Self check-in" },
-            { href: "/register", icon: "✚", label: "Book visit" },
+            { href: hospitalId ? `/checkin?hospital=${hospitalId}` : "/checkin", icon: "✚", label: "Self check-in" },
+            { href: hospitalId ? `/register?hospital=${hospitalId}&source=patient` : "/register", icon: "✚", label: "Book visit" },
+          ],
+        },
+      ];
+    }
+    if (mode === "doctor") {
+      return [
+        {
+          label: "Doctor",
+          links: [
+            { href: "/doctor", icon: "👤", label: "My Patients" },
+            ...(doctor
+              ? [{ href: `/room/${doctor.external_id}`, icon: "🩺", label: "Consultation Room" }]
+              : []),
           ],
         },
       ];
@@ -54,20 +67,13 @@ export function Shell({ children, title, subtitle }: { children: ReactNode; titl
         links: [
           { href: hid ? `/hospital/${hid}` : "/hospital", icon: "⌂", label: "Console" },
           { href: "/ops", icon: "▦", label: "Dashboard" },
+          { href: "/doctors", icon: "👤", label: "Manage Doctors" },
+          { href: "/scans", icon: "🔬", label: "Manage Scans" },
           { href: "/insights", icon: "📊", label: "Insights" },
-          { href: "/register", icon: "✚", label: "Register" },
-          { href: "/reception", icon: "📋", label: "Today's Board" },
-          { href: "/opd", icon: "🩺", label: "OPD Board" },
-          { href: "/scans", icon: "🔬", label: "Scans" },
-          { href: "/doctors", icon: "👤", label: "Doctors" },
         ],
       },
-      {
-        label: "System",
-        links: [{ href: "/training", icon: "⚙", label: "Training" }],
-      },
     ];
-  }, [mode, hospital, hospitalId]);
+  }, [mode, hospital, hospitalId, doctor]);
 
   return (
     <div className="app-shell">
@@ -76,7 +82,7 @@ export function Shell({ children, title, subtitle }: { children: ReactNode; titl
           <div className="logo-mark">Q</div>
           <div className="logo-name">Quivora</div>
           <div className="logo-sub">
-            {mode === "admin" ? "Platform" : mode === "patient" ? "Patient" : "Hospital Ops"}
+            {mode === "admin" ? "Platform" : mode === "patient" ? "Patient" : mode === "doctor" ? "Doctor" : "Hospital Ops"}
           </div>
         </Link>
 
@@ -85,10 +91,11 @@ export function Shell({ children, title, subtitle }: { children: ReactNode; titl
             <div key={section.label}>
               <div className="sidebar-section">{section.label}</div>
               {section.links.map((l) => {
+                const linkPath = l.href.split("?")[0];
                 const active =
-                  l.href === "/" || l.href === "/admin" || l.href === "/patient-portal" || l.href === "/hospital"
-                    ? pathname === l.href || (l.href.startsWith("/hospital") && pathname.startsWith("/hospital"))
-                    : pathname.startsWith(l.href);
+                  linkPath === "/" || linkPath === "/admin" || linkPath === "/patient-portal" || linkPath === "/hospital"
+                    ? pathname === linkPath || (linkPath.startsWith("/hospital") && pathname.startsWith("/hospital"))
+                    : pathname.startsWith(linkPath);
                 return (
                   <Link key={l.href} href={l.href} className={`sidebar-link ${active ? "active" : ""}`}>
                     <span className="nav-icon">{NAV_ICONS[l.icon] ?? l.icon}</span>

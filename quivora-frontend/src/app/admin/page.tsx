@@ -15,7 +15,9 @@ export default function AdminPage() {
   const [phone, setPhone] = useState("");
   const [timezone, setTimezone] = useState("Asia/Kolkata");
   const [loading, setLoading] = useState(false);
+  const [seeding, setSeeding] = useState(false);
   const [msg, setMsg] = useState("");
+  const [maintenanceMsg, setMaintenanceMsg] = useState("");
 
   const load = async () => {
     const hs = await api.hospitals();
@@ -44,6 +46,22 @@ export default function AdminPage() {
     await api.updateHospital(h.id, { is_active: !(h.is_active ?? true) });
     await load();
     await refresh();
+  };
+
+  const reseed = async () => {
+    if (!window.confirm("Re-seeding permanently deletes the current hospitals, patients, appointments, and queues. Continue?")) return;
+    setSeeding(true);
+    setMaintenanceMsg("");
+    try {
+      await api.seed();
+      await load();
+      await refresh();
+      setMaintenanceMsg("Demo database re-seeded successfully.");
+    } catch (e) {
+      setMaintenanceMsg(e instanceof Error ? e.message : "Re-seed failed");
+    } finally {
+      setSeeding(false);
+    }
   };
 
   return (
@@ -119,6 +137,30 @@ export default function AdminPage() {
             </button>
           </div>
         </div>
+      </div>
+
+      <div className="card" style={{ marginTop: 16, padding: 20 }}>
+        <div style={{ fontWeight: 700 }}>Admin tools</div>
+        <p style={{ margin: "5px 0 16px", color: "var(--muted)", fontSize: 12 }}>
+          Platform-wide maintenance actions. These controls are not shown on hospital dashboards.
+        </p>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Link href="/training" className="btn btn-primary">Manage training</Link>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={seeding}
+            onClick={reseed}
+            style={{ color: "var(--err)", borderColor: "var(--err)" }}
+          >
+            {seeding ? "Re-seeding…" : "Re-seed demo database"}
+          </button>
+        </div>
+        {maintenanceMsg && (
+          <p style={{ margin: "12px 0 0", fontSize: 12, color: maintenanceMsg.includes("successfully") ? "var(--ok)" : "var(--err)" }}>
+            {maintenanceMsg}
+          </p>
+        )}
       </div>
     </Shell>
   );

@@ -359,7 +359,7 @@ export default function HospitalConsolePage() {
             <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
               <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Quick links</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <Link href="/register" className="btn btn-secondary btn-sm">Register patient →</Link>
+                <Link href={`/register?hospital=${id}&source=hospital`} className="btn btn-secondary btn-sm">Register patient →</Link>
                 <Link href="/opd" className="btn btn-secondary btn-sm">OPD live board →</Link>
                 <Link href="/scans" className="btn btn-secondary btn-sm">Scan queues →</Link>
               </div>

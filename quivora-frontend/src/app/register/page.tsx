@@ -48,6 +48,7 @@ function RegisterPageContent() {
   const searchParams = useSearchParams();
   const prefillHospitalId = searchParams.get("hospital");
   const prefillDoctorId = searchParams.get("doctor");
+  const prefillSource = searchParams.get("source");
   const prefillApplied = useRef(false);
 
   const [step, setStep] = useState<Step>("hospital");
@@ -96,9 +97,9 @@ function RegisterPageContent() {
     const h = hospitals.find((x) => String(x.id) === prefillHospitalId);
     if (!h) return;
     setSelHospital(h);
+    setStep("patient");
     if (prefillDoctorId) {
       setServiceType("doctor");
-      setStep("patient");
     }
     prefillApplied.current = true;
   }, [prefillHospitalId, prefillDoctorId, hospitals]);
@@ -159,7 +160,10 @@ function RegisterPageContent() {
   };
 
   const reset = () => {
-    setStep("hospital"); setSelHospital(null); setSelPatient(null); setIsNew(false);
+    const keepHospital = Boolean(prefillHospitalId && selHospital);
+    setStep(keepHospital ? "patient" : "hospital");
+    if (!keepHospital) setSelHospital(null);
+    setSelPatient(null); setIsNew(false);
     setNewName(""); setNewAge(30); setSearchQ(""); setResults([]);
     setSelDoctor(null); setSelMachine(null); setSelSlot(""); setToken(null); setApptId(null); setError("");
     setVisitType("new"); setServiceType("doctor");
@@ -323,6 +327,10 @@ function RegisterPageContent() {
                 <div style={{ display: "flex", gap: 8, marginTop: 24 }}>
                   {prefillDoctorId ? (
                     <Link href="/reception" className="btn btn-ghost">← Board</Link>
+                  ) : prefillHospitalId ? (
+                    <Link href={prefillSource === "patient" ? "/patient-portal" : "/ops"} className="btn btn-ghost">
+                      ← {prefillSource === "patient" ? "My care" : "Dashboard"}
+                    </Link>
                   ) : (
                     <button className="btn btn-ghost" onClick={() => setStep("hospital")}>← Back</button>
                   )}

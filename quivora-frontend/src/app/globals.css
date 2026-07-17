@@ -311,7 +311,7 @@ a { color: inherit; text-decoration: none; }
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   z-index: 80;
-  overflow: hidden;
+  overflow: visible;
   animation: feed-in 0.2s ease;
 }
 .role-menu-section {
@@ -343,6 +343,58 @@ a { color: inherit; text-decoration: none; }
 }
 .role-menu-item.active-sub {
   background: rgba(13, 148, 136, 0.08);
+}
+.role-menu-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.role-menu-arrow {
+  color: var(--muted);
+  font-size: 18px;
+}
+.role-submenu {
+  position: absolute;
+  right: calc(100% + 8px);
+  top: 0;
+  width: 310px;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  animation: feed-in 0.16s ease;
+}
+.role-submenu-title {
+  padding: 13px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  border-bottom: 1px solid var(--border);
+}
+.role-submenu-list {
+  max-height: 190px;
+  overflow-y: auto;
+}
+.role-submenu-hospitals {
+  max-height: 150px;
+}
+.role-submenu-empty {
+  padding: 14px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+@media (max-width: 760px) {
+  .role-menu {
+    width: min(300px, calc(100vw - 32px));
+  }
+  .role-submenu {
+    right: 0;
+    top: calc(100% + 8px);
+    width: 100%;
+  }
 }
 
 /* ─── Cards ───────────────────────────────────────────── */

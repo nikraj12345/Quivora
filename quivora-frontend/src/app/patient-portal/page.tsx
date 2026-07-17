@@ -31,7 +31,12 @@ export default function PatientPortalPage() {
             Use the top-right switcher → <strong>Patient</strong> → pick your hospital, then select your name.
             Or book a new visit at reception.
           </p>
-          <Link href="/register" className="btn btn-primary">Book / register →</Link>
+          <Link
+            href={hospitalId ? `/register?hospital=${hospitalId}&source=patient` : "/register"}
+            className="btn btn-primary"
+          >
+            Book / register →
+          </Link>
         </div>
       ) : (
         <div className="page-grid-2">
@@ -46,7 +51,12 @@ export default function PatientPortalPage() {
               <div style={{ color: "var(--muted)", marginTop: 2 }}>{hospital?.city}{hospital?.address ? ` · ${hospital.address}` : ""}</div>
             </div>
             <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
-              <Link href="/register" className="btn btn-primary">Book a visit →</Link>
+              <Link
+                href={hospitalId ? `/register?hospital=${hospitalId}&source=patient` : "/register"}
+                className="btn btn-primary"
+              >
+                Book a visit →
+              </Link>
               <p style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.5 }}>
                 After registration you&apos;ll get a token and Telegram updates when the doctor goes live.
               </p>

@@ -3,45 +3,52 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Shell } from "@/components/Shell";
-import { api, Doctor, Hospital } from "@/lib/api";
+import { api, Doctor } from "@/lib/api";
+import { useRole } from "@/lib/role";
 import { formatSlotsList, slotShort } from "@/lib/slots";
 
 export default function DoctorsPage() {
-  const [hospitals, setHospitals] = useState<Hospital[]>([]);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const { hospital, hospitalId, setMode } = useRole();
   const [doctors, setDoctors] = useState<Doctor[]>([]);
+  const selectedId = hospitalId || hospital?.id || null;
+
+  useEffect(() => { setMode("hospital"); }, [setMode]);
 
   useEffect(() => {
-    api.hospitals().then((hs) => { setHospitals(hs); if (hs[0]) setSelectedId(hs[0].id); });
-  }, []);
-
-  useEffect(() => {
-    if (!selectedId) return;
-    const load = () => api.doctors(selectedId).then(setDoctors);
+    if (!selectedId) {
+      setDoctors([]);
+      return;
+    }
+    setDoctors([]);
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const rows = await api.doctors(selectedId);
+        if (!cancelled) setDoctors(rows);
+      } catch {
+        if (!cancelled) setDoctors([]);
+      }
+    };
     load();
     const t = setInterval(load, 10000);
-    return () => clearInterval(t);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
   }, [selectedId]);
 
   const live = doctors.filter((d) => d.is_live).length;
-  const sel = hospitals.find((h) => h.id === selectedId);
 
   return (
-    <Shell title="Doctors" subtitle={sel ? `${sel.name} · ${sel.city}` : ""}>
-      {/* Hospital tabs */}
-      <div style={{ marginBottom: 20, overflowX: "auto" }}>
-        <div className="tab-bar" style={{ display: "inline-flex" }}>
-          {hospitals.map((h) => (
-            <button key={h.id} className={`tab-btn ${selectedId === h.id ? "active" : ""}`} onClick={() => setSelectedId(h.id)}>
-              {h.name.replace("Quivora ", "")}
-            </button>
-          ))}
+    <Shell title="Manage Doctors" subtitle={hospital ? `${hospital.name} · ${hospital.city}` : "Select a hospital"}>
+      <div style={{ marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 13, color: "var(--muted)" }}>
+          <strong style={{ color: live > 0 ? "var(--ok)" : "var(--ink-2)" }}>{live}</strong> live ·{" "}
+          <strong style={{ color: "var(--ink-2)" }}>{doctors.length - live}</strong> offline
         </div>
-      </div>
-
-      <div style={{ marginBottom: 12, fontSize: 13, color: "var(--muted)" }}>
-        <strong style={{ color: live > 0 ? "var(--ok)" : "var(--ink-2)" }}>{live}</strong> live ·{" "}
-        <strong style={{ color: "var(--ink-2)" }}>{doctors.length - live}</strong> offline
+        <Link href={selectedId ? `/hospital/${selectedId}` : "/hospital"} className="btn btn-primary btn-sm">
+          Enroll doctor / edit schedules
+        </Link>
       </div>
 
       <div className="card" style={{ overflow: "hidden" }}>

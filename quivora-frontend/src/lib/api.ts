@@ -354,7 +354,8 @@ export type ScanEta = {
 
 export const api = {
   health: () => request<{ status: string; postgres: boolean; redis: boolean; telegram_enabled: boolean; telegram_bot_username: string | null }>("/health"),
-  opdSummary: () => request<OpdSummary>("/v1/opd/summary"),
+  opdSummary: (hospital_id?: number) =>
+    request<OpdSummary>(`/v1/opd/summary${hospital_id ? `?hospital_id=${hospital_id}` : ""}`),
   hospitals: () => request<Hospital[]>("/v1/hospitals"),
   hospital: (ref: string | number) => request<Hospital>(`/v1/hospitals/${ref}`),
   createHospital: (body: { name: string; city: string; address?: string; phone?: string; timezone?: string; external_id?: string }) =>
