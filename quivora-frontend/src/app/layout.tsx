@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Fraunces, Source_Sans_3 } from "next/font/google";
+import { Fraunces, Figtree } from "next/font/google";
 import { Providers } from "@/components/Providers";
 import "./globals.css";
 
@@ -8,7 +8,7 @@ const display = Fraunces({
   variable: "--font-display",
 });
 
-const body = Source_Sans_3({
+const body = Figtree({
   subsets: ["latin"],
   variable: "--font-body",
 });

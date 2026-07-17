@@ -119,16 +119,21 @@ def recompute_scan_queue_etas(db: Session, machine_id: int) -> None:
         # Same 2-level hierarchy as doctor queues
         if (machine_live
                 and prev_ahead is not None
-                and appt.status != ScanStatus.in_progress
-                and appt.telegram_chat_id):
+                and appt.status != ScanStatus.in_progress):
             from app.services.telegram_bot import notify_almost_next, notify_next
+            from app.services import sms
             machine_name = machine.name if machine else "Scan"
             patient_name = appt.patient.name if appt.patient else "Patient"
+            phone = sms.phone_from_patient(appt.patient)
             eta_time = eta_at.astimezone().strftime("%-I:%M %p") if eta_at else None
             if patients_ahead == 1 and prev_ahead > 1:
-                notify_almost_next(appt.telegram_chat_id, patient_name, appt.token, machine_name, eta_time)
+                if appt.telegram_chat_id:
+                    notify_almost_next(appt.telegram_chat_id, patient_name, appt.token, machine_name, eta_time)
+                sms.notify_almost_next(phone, patient_name, appt.token, machine_name, eta_time)
             elif patients_ahead == 0 and prev_ahead > 0:
-                notify_next(appt.telegram_chat_id, patient_name, appt.token, machine_name, eta_time)
+                if appt.telegram_chat_id:
+                    notify_next(appt.telegram_chat_id, patient_name, appt.token, machine_name, eta_time)
+                sms.notify_next(phone, patient_name, appt.token, machine_name, eta_time)
 
     db.commit()
 

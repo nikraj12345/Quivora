@@ -103,6 +103,7 @@ class AppointmentCreate(BaseModel):
     doctor_external_id: str
     patient_external_id: Optional[str] = None
     patient_name: Optional[str] = None
+    patient_phone: Optional[str] = None  # 10-digit mobile — enables SMS + returning lookup
     age: int
     token: Optional[int] = None
     appointment_type: str = "new"
@@ -268,6 +269,9 @@ class EtaOut(BaseModel):
     eta_at: Optional[datetime]
     confidence_min: float
     predicted_duration_sec: int
+    current_token: Optional[int] = None  # token now being served (in progress), if any
+    slot: Optional[str] = None
+    doctor_live: bool = False
 
 
 class TrainStartResponse(BaseModel):
@@ -307,6 +311,10 @@ class HealthOut(BaseModel):
     status: str
     postgres: bool
     redis: bool
+    telegram_enabled: bool = False
+    telegram_bot_username: Optional[str] = None
+    sms_enabled: bool = False
+    sms_provider: Optional[str] = None
 
 
 class OpdSummaryOut(BaseModel):

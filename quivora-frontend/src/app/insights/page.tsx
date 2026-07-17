@@ -112,22 +112,19 @@ export default function InsightsPage() {
   ] : [];
 
   return (
-    <Shell title="Quivora Insights" subtitle={data?.hospital_name || hospital?.name || "Hospital intelligence"}>
+    <Shell title="Insights" subtitle={data?.hospital_name || hospital?.name || undefined}>
       {!hid || (hospitals.length > 0 && !hospital) ? (
-        <div className="card" style={{ padding: 32 }}>
-          <p style={{ color: "var(--muted)", margin: 0 }}>
-            {hospitals.length === 0
-              ? "No hospitals found. Run seed first, then pick a hospital from the top-right switcher."
-              : "Selected hospital is outdated (often after a reseed). Pick Quivora General Hospital from the top-right switcher."}
-          </p>
-        </div>
+        <p className="empty-hint">
+          {hospitals.length === 0
+            ? "No hospitals found. Run seed first, then pick a hospital from the top-right switcher."
+            : "Selected hospital is outdated. Pick a hospital from the top-right switcher."}
+        </p>
       ) : (
         <div className={styles.page}>
           <div className={styles.hero}>
             <div>
-              <div className={styles.eyebrow}><span /> What to fix today</div>
-              <h1>Operational intelligence,<br /><em>not another chart dump.</em></h1>
-              <p>Live patient flow, doctor load, diagnostic capacity and evidence-backed actions for hospital administrators.</p>
+              <h1>What to fix</h1>
+              <p>Patient flow, doctor load, and actions backed by the period you select.</p>
             </div>
             <div className={styles.controls}>
               <div className={styles.periods}>
@@ -149,7 +146,7 @@ export default function InsightsPage() {
                 </select>
               </label>
               <button type="button" className={styles.refresh} onClick={load} disabled={loading}>
-                <span className={loading ? styles.spinning : ""}>↻</span> {loading ? "Analysing" : "Refresh"}
+                <span className={loading ? styles.spinning : ""}>↻</span> {loading ? "Loading" : "Refresh"}
               </button>
             </div>
           </div>
@@ -347,7 +344,7 @@ export default function InsightsPage() {
                                 title={`${dept}, ${fmtHour(hour)}: ${count} patient${count === 1 ? "" : "s"}`}
                                 style={{
                                   background: count
-                                    ? `rgba(13, 148, 136, ${0.12 + intensity * 0.78})`
+                                    ? `rgba(31, 92, 72, ${0.12 + intensity * 0.72})`
                                     : "var(--surface-3)",
                                   color: intensity > 0.55 ? "white" : "var(--muted)",
                                 }}

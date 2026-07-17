@@ -94,12 +94,17 @@ def remaining_for_in_progress(appt: Appointment, predicted: int, now: datetime) 
 
 
 def recompute_doctor_queue_etas(db: Session, doctor_id: int) -> None:
-    from app.models import Doctor as DoctorModel, SLOT_ORDER
+    from app.models import Doctor as DoctorModel, Hospital, SLOT_ORDER
+    from app.services.queue import session_day_bounds_utc
+
     doctor = db.get(DoctorModel, doctor_id)
     doctor_live = doctor.is_live if doctor else False
     active_slot = doctor.active_slot if doctor else None
 
     now = datetime.now(timezone.utc)
+    hospital = db.get(Hospital, doctor.hospital_id) if doctor else None
+    day_start, day_end = session_day_bounds_utc(hospital, now)
+
     appts = (
         db.execute(
             select(Appointment)
@@ -112,6 +117,8 @@ def recompute_doctor_queue_etas(db: Session, doctor_id: int) -> None:
                         AppointmentStatus.in_progress,
                     ]
                 ),
+                Appointment.scheduled_at >= day_start,
+                Appointment.scheduled_at < day_end,
             )
         )
         .scalars()
@@ -182,21 +189,38 @@ def recompute_doctor_queue_etas(db: Session, doctor_id: int) -> None:
 
             if (slot_live
                     and prev_ahead is not None
-                    and appt.status != AppointmentStatus.in_progress
-                    and appt.telegram_chat_id):
+                    and appt.status != AppointmentStatus.in_progress):
                 from app.services.telegram_bot import notify_almost_next, notify_next
+                from app.services import sms
                 doctor_name = doctor.name if doctor else "Doctor"
                 patient_name = appt.patient.name if appt.patient else "Patient"
-                service = f"{doctor_name} · {slot.capitalize()}"
+                phone = sms.phone_from_patient(appt.patient)
                 # Prefer full label with timings when notifying
                 from app.models import SLOT_LABELS as _SL
                 service = f"{doctor_name} · {_SL.get(slot, slot.capitalize())}"
                 eta_time = eta_at.astimezone().strftime("%-I:%M %p") if eta_at else None
 
                 if ahead == 1 and prev_ahead > 1:
-                    notify_almost_next(appt.telegram_chat_id, patient_name, appt.token, service, eta_time)
+                    serving = None
+                    from app.services.queue import current_serving_token
+                    serving = current_serving_token(db, doctor.id, slot) if doctor else None
+                    wait_sec = int(eta_wait) if eta_wait is not None else None
+                    if appt.telegram_chat_id:
+                        notify_almost_next(appt.telegram_chat_id, patient_name, appt.token, service, eta_time)
+                    sms.notify_almost_next(
+                        phone, patient_name, appt.token, service, eta_time,
+                        current_token=serving, wait_seconds=wait_sec,
+                    )
                 elif ahead == 0 and prev_ahead > 0:
-                    notify_next(appt.telegram_chat_id, patient_name, appt.token, service, eta_time)
+                    from app.services.queue import current_serving_token
+                    serving = current_serving_token(db, doctor.id, slot) if doctor else None
+                    wait_sec = int(eta_wait) if eta_wait is not None else None
+                    if appt.telegram_chat_id:
+                        notify_next(appt.telegram_chat_id, patient_name, appt.token, service, eta_time)
+                    sms.notify_next(
+                        phone, patient_name, appt.token, service, eta_time,
+                        current_token=serving, wait_seconds=wait_sec,
+                    )
 
             if appt.status == AppointmentStatus.in_progress:
                 cumulative = remaining_for_in_progress(appt, pred, now)

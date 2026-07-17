@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -24,14 +25,152 @@ from app.models import (
 from app.config import settings
 from app.services.age_bands import age_to_band
 from app.services.eta import recompute_doctor_queue_etas, record_duration_sample
+from app.services import sms
 from app.services import telegram_bot as tg
 
 VALID_PRIORITIES = ("emergency", "senior", "urgent", "normal")
+WAITING_STATUSES = (
+    AppointmentStatus.scheduled,
+    AppointmentStatus.checked_in,
+    AppointmentStatus.in_progress,
+)
 
 
 def _test_chat_id() -> Optional[str]:
     v = settings.telegram_test_recipient.strip()
     return v if v else None
+
+
+def hospital_zone(hospital: Optional[Hospital]) -> ZoneInfo:
+    name = (getattr(hospital, "timezone", None) or "Asia/Kolkata").strip() or "Asia/Kolkata"
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("Asia/Kolkata")
+
+
+def session_day_bounds_utc(
+    hospital: Optional[Hospital],
+    when: Optional[datetime] = None,
+) -> tuple[datetime, datetime]:
+    """Return [day_start, day_end) in UTC for the hospital's local calendar day."""
+    tz = hospital_zone(hospital)
+    now = (when or datetime.now(timezone.utc)).astimezone(tz)
+    start_local = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_local = start_local + timedelta(days=1)
+    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
+
+
+def _appt_anchor(appt: Appointment) -> Optional[datetime]:
+    t = appt.scheduled_at or appt.created_at
+    if t is None:
+        return None
+    if t.tzinfo is None:
+        return t.replace(tzinfo=timezone.utc)
+    return t
+
+
+def clear_session_queues(
+    db: Session,
+    doctor: Doctor,
+    *,
+    keep_slot: Optional[str] = None,
+    clear_all_waiting: bool = False,
+    reason: str = "Session ended",
+) -> int:
+    """
+    Empty leftover OPD queues between sessions.
+
+    - clear_all_waiting: cancel every waiting appointment for this doctor (go offline).
+    - keep_slot: keep only today's appointments for that slot; cancel other slots
+      and prior-day leftovers for the same slot.
+    """
+    hospital = db.get(Hospital, doctor.hospital_id)
+    day_start, day_end = session_day_bounds_utc(hospital)
+    waiting = db.execute(
+        select(Appointment).where(
+            Appointment.doctor_id == doctor.id,
+            Appointment.status.in_(WAITING_STATUSES),
+        )
+    ).scalars().all()
+
+    cleared = 0
+    now = datetime.now(timezone.utc)
+    for appt in waiting:
+        cancel = False
+        if clear_all_waiting:
+            cancel = True
+        elif keep_slot:
+            slot = appt.slot or "morning"
+            anchor = _appt_anchor(appt)
+            if slot != keep_slot:
+                cancel = True
+            elif anchor is None or not (day_start <= anchor < day_end):
+                cancel = True
+        if not cancel:
+            continue
+        was_in_progress = appt.status == AppointmentStatus.in_progress or bool(appt.started_at)
+        appt.status = AppointmentStatus.cancelled
+        if was_in_progress:
+            appt.ended_at = now
+        db.add(
+            QueueEvent(
+                appointment_id=appt.id,
+                event_type=EventType.no_show.value,
+                note=reason,
+                timestamp=now,
+            )
+        )
+        cleared += 1
+
+    # Always start a new token series for the next session
+    doctor.queue_epoch_at = now
+    db.add(doctor)
+    db.commit()
+    return cleared
+
+
+def bump_queue_epoch(db: Session, doctor: Doctor) -> datetime:
+    """Force next token for this doctor to start at 1."""
+    now = datetime.now(timezone.utc)
+    doctor.queue_epoch_at = now
+    db.add(doctor)
+    db.commit()
+    db.refresh(doctor)
+    return now
+
+
+def ensure_queue_epoch(db: Session, doctor: Doctor) -> datetime:
+    """Return session token epoch; initialize to now if missing (fresh tokens)."""
+    epoch = getattr(doctor, "queue_epoch_at", None)
+    if epoch is None:
+        return bump_queue_epoch(db, doctor)
+    if epoch.tzinfo is None:
+        return epoch.replace(tzinfo=timezone.utc)
+    return epoch
+
+
+def current_serving_token(db: Session, doctor_id: int, slot: str) -> Optional[int]:
+    appt = db.execute(
+        select(Appointment)
+        .where(
+            Appointment.doctor_id == doctor_id,
+            Appointment.slot == slot,
+            Appointment.status == AppointmentStatus.in_progress,
+        )
+        .order_by(Appointment.started_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    return appt.token if appt else None
+
+
+def today_session_filter(hospital: Optional[Hospital]):
+    """SQLAlchemy filter: appointment belongs to today's hospital-local day."""
+    day_start, day_end = session_day_bounds_utc(hospital)
+    return or_(
+        Appointment.scheduled_at.between(day_start, day_end - timedelta(microseconds=1)),
+        (Appointment.scheduled_at.is_(None) & Appointment.created_at.between(day_start, day_end - timedelta(microseconds=1))),
+    )
 
 
 def _parse_slots(doctor: Doctor) -> list[str]:
@@ -79,6 +218,7 @@ def create_appointment(
     age: int,
     patient_external_id: Optional[str] = None,
     patient_name: Optional[str] = None,
+    patient_phone: Optional[str] = None,
     external_id: Optional[str] = None,
     token: Optional[int] = None,
     appointment_type: str = "new",
@@ -87,6 +227,8 @@ def create_appointment(
     priority: Optional[str] = None,
     priority_reason: Optional[str] = None,
 ) -> Appointment:
+    from app.services.self_checkin import find_patient_by_phone, format_phone_display, normalize_phone
+
     doctor = db.execute(
         select(Doctor).where(Doctor.external_id == doctor_external_id)
     ).scalar_one_or_none()
@@ -103,32 +245,66 @@ def create_appointment(
         else:
             raise ValueError(f"priority_reason is required for {priority_val} triage")
 
+    phone_digits = normalize_phone(patient_phone or "")
+    if patient_phone and len(phone_digits) < 10:
+        raise ValueError("Enter a valid 10-digit mobile number")
+
     patient = None
-    if patient_external_id:
+    if phone_digits:
+        patient = find_patient_by_phone(db, hospital.id, phone_digits)
+        if patient:
+            if patient_name and patient_name.strip():
+                patient.name = patient_name.strip()
+            patient.age = age
+            patient.age_band = age_to_band(age)
+            if not patient.phone:
+                patient.phone = format_phone_display(phone_digits)
+    if not patient and patient_external_id:
         patient = db.execute(
             select(Patient).where(
                 Patient.hospital_id == hospital.id,
                 Patient.external_id == patient_external_id,
             )
         ).scalar_one_or_none()
+        if patient and phone_digits and not patient.phone:
+            patient.phone = format_phone_display(phone_digits)
     if not patient:
-        ext = patient_external_id or f"WALK-{uuid.uuid4().hex[:8]}"
+        ext = patient_external_id or (
+            f"MOB-{phone_digits[-8:]}" if phone_digits else f"WALK-{uuid.uuid4().hex[:8]}"
+        )
         patient = Patient(
             hospital_id=hospital.id,
             external_id=ext,
-            name=patient_name or f"Patient {ext}",
+            name=(patient_name or "").strip() or f"Patient {ext}",
             age=age,
             age_band=age_to_band(age),
+            phone=format_phone_display(phone_digits) if phone_digits else None,
         )
+        existing_ext = db.execute(
+            select(Patient).where(
+                Patient.hospital_id == hospital.id,
+                Patient.external_id == patient.external_id,
+            )
+        ).scalar_one_or_none()
+        if existing_ext:
+            patient.external_id = f"MOB-{phone_digits or uuid.uuid4().hex[:8]}-{age}"
         db.add(patient)
         db.flush()
 
-    # Token is per doctor + slot (display number); order is by priority then token
+    # Tokens restart from 1 after each session clear (queue_epoch_at)
     if token is None:
+        epoch = ensure_queue_epoch(db, doctor)
+        day_start, day_end = session_day_bounds_utc(hospital)
+        token_start = max(epoch, day_start)
         max_token = db.execute(
             select(func.max(Appointment.token)).where(
                 Appointment.doctor_id == doctor.id,
                 Appointment.slot == slot_val,
+                Appointment.scheduled_at >= token_start,
+                Appointment.scheduled_at < day_end,
+                Appointment.status.notin_(
+                    [AppointmentStatus.cancelled, AppointmentStatus.no_show]
+                ),
             )
         ).scalar()
         token = int(max_token or 0) + 1
@@ -173,26 +349,49 @@ def create_appointment(
     recompute_doctor_queue_etas(db, doctor.id)
     db.refresh(appt)
 
+    waiting = db.execute(
+        select(Appointment).where(
+            Appointment.doctor_id == doctor.id,
+            Appointment.slot == slot_val,
+            Appointment.status.in_([AppointmentStatus.scheduled, AppointmentStatus.checked_in]),
+        )
+    ).scalars().all()
+    ordered = sorted(waiting, key=queue_sort_key)
+    ahead = 0
+    for a in ordered:
+        if a.id == appt.id:
+            break
+        ahead += 1
+    slot_label = SLOT_LABELS.get(slot_val, slot_val.capitalize())
+    pri = PRIORITY_LABELS.get(priority_val, "")
+    service = f"{doctor.name} · {slot_label}"
+    if priority_val != "normal":
+        service = f"{service} · {pri}"
+
     if auto_chat and settings.telegram_bot_token:
-        waiting = db.execute(
-            select(Appointment).where(
-                Appointment.doctor_id == doctor.id,
-                Appointment.slot == slot_val,
-                Appointment.status.in_([AppointmentStatus.scheduled, AppointmentStatus.checked_in]),
-            )
-        ).scalars().all()
-        ordered = sorted(waiting, key=queue_sort_key)
-        ahead = 0
-        for a in ordered:
-            if a.id == appt.id:
-                break
-            ahead += 1
-        slot_label = SLOT_LABELS.get(slot_val, slot_val.capitalize())
-        pri = PRIORITY_LABELS.get(priority_val, "")
-        service = f"{doctor.name} · {slot_label}"
-        if priority_val != "normal":
-            service = f"{service} · {pri}"
         tg.notify_booked(auto_chat, patient.name, appt.token, ahead, service)
+
+    # Registration SMS with live queue context (current token / wait / ETA)
+    from app.models import Prediction
+    pred = db.execute(select(Prediction).where(Prediction.appointment_id == appt.id)).scalar_one_or_none()
+    serving = current_serving_token(db, doctor.id, slot_val)
+    wait_sec = int(pred.wait_seconds) if pred and pred.wait_seconds is not None else None
+    eta_time = None
+    if pred and pred.eta_at:
+        eta_time = pred.eta_at.astimezone().strftime("%-I:%M %p")
+    sms_phone = format_phone_display(phone_digits) if phone_digits else sms.phone_from_patient(patient)
+    sms.notify_booked(
+        sms_phone,
+        patient.name,
+        appt.token,
+        ahead,
+        service,
+        current_token=serving,
+        wait_seconds=wait_sec,
+        eta_time=eta_time,
+        doctor_live=bool(doctor.is_live and (doctor.active_slot in (None, slot_val))),
+        sync=True,
+    )
 
     return appt
 
@@ -211,6 +410,7 @@ def apply_event(db: Session, appointment_id: int, event_type: str) -> Appointmen
     db.add(QueueEvent(appointment_id=appt.id, event_type=et.value, timestamp=now))
 
     chat_id = appt.telegram_chat_id
+    phone = sms.phone_from_patient(appt.patient)
     doctor_name = appt.doctor.name if appt.doctor else "Doctor"
     patient_name = appt.patient.name if appt.patient else "Patient"
     service = f"{doctor_name} · {SLOT_LABELS.get(appt.slot or 'morning', (appt.slot or 'morning').capitalize())}"
@@ -222,6 +422,7 @@ def apply_event(db: Session, appointment_id: int, event_type: str) -> Appointmen
         appt.started_at = now
         if chat_id:
             tg.notify_started(chat_id, patient_name, appt.token, service)
+        sms.notify_started(phone, patient_name, appt.token, service)
     elif et == EventType.ended:
         appt.status = AppointmentStatus.completed
         appt.ended_at = now
@@ -244,10 +445,12 @@ def apply_event(db: Session, appointment_id: int, event_type: str) -> Appointmen
         )
         if chat_id:
             tg.notify_ended(chat_id, patient_name, service)
+        sms.notify_ended(phone, patient_name, service)
     elif et == EventType.no_show:
         appt.status = AppointmentStatus.no_show
         if chat_id:
             tg.notify_no_show(chat_id, patient_name, appt.token)
+        sms.notify_no_show(phone, patient_name, appt.token)
     elif et == EventType.emergency_insert:
         # Promote to emergency priority — jumps ahead of all non-emergency
         appt.priority = "emergency"

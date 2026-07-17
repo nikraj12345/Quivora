@@ -47,7 +47,7 @@ export function RoleSwitcher() {
     if (m === "admin") {
       router.push("/admin");
     } else if (m === "hospital") {
-      router.push(hospitalId ? `/hospital/${hospitalId}` : "/hospital");
+      router.push("/reception");
     } else if (m === "doctor") {
       router.push("/doctor");
     } else {
@@ -61,7 +61,7 @@ export function RoleSwitcher() {
     if (targetMode === "hospital") {
       setOpen(false);
       setSubmenuMode(null);
-      router.push(`/hospital/${id}`);
+      router.push("/reception");
     }
     if (targetMode === "patient") {
       setPatientId(null);

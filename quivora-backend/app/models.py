@@ -147,6 +147,8 @@ class Doctor(Base):
     is_available: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     is_live: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     went_live_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Tokens restart from 1 after each session clear (go-live / go-offline)
+    queue_epoch_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     work_days: Mapped[str] = mapped_column(String(64), nullable=False, default=DEFAULT_WORK_DAYS, server_default=DEFAULT_WORK_DAYS)
     is_on_break: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     break_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

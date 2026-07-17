@@ -85,17 +85,13 @@ def self_checkin(
     is_new = False
     if not patient:
         if not name or not name.strip():
-            raise ValueError("Name is required for new patients")
+            raise ValueError("Name is required")
         if age is None or age < 0 or age > 120:
-            raise ValueError("Age is required for new patients (0–120)")
-        if not address or not address.strip():
-            raise ValueError("Address is required for new patients")
-        gender_value = (gender or "").strip().lower()
-        if gender_value not in {"female", "male", "other", "prefer_not_to_say"}:
+            raise ValueError("Age is required (0–120)")
+        gender_value = (gender or "").strip().lower() or None
+        if gender_value and gender_value not in {"female", "male", "other", "prefer_not_to_say"}:
             raise ValueError("Select a valid gender")
         emergency_digits = normalize_phone(emergency_contact or "")
-        if len(emergency_digits) < 10:
-            raise ValueError("Enter a valid 10-digit emergency contact")
         patient = Patient(
             hospital_id=hospital.id,
             external_id=f"QR-{digits[-8:]}",
@@ -103,9 +99,9 @@ def self_checkin(
             age=int(age),
             age_band=age_to_band(int(age)),
             phone=format_phone_display(digits),
-            address=address.strip(),
+            address=(address or "").strip() or None,
             gender=gender_value,
-            emergency_contact=format_phone_display(emergency_digits),
+            emergency_contact=format_phone_display(emergency_digits) if len(emergency_digits) >= 10 else None,
         )
         # Avoid external_id clash
         existing_ext = db.execute(
@@ -120,9 +116,13 @@ def self_checkin(
         db.flush()
         is_new = True
     else:
-        # Keep phone formatted
         if not patient.phone:
             patient.phone = format_phone_display(digits)
+        if name and name.strip():
+            patient.name = name.strip()
+        if age is not None and 0 <= age <= 120:
+            patient.age = int(age)
+            patient.age_band = age_to_band(int(age))
 
     appt = create_appointment(
         db,
@@ -130,6 +130,7 @@ def self_checkin(
         age=patient.age,
         patient_external_id=patient.external_id,
         patient_name=patient.name,
+        patient_phone=digits,
         slot=slot,
         appointment_type="follow_up" if not is_new else "new",
     )

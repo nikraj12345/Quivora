@@ -6,7 +6,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { api, Doctor, Hospital, PatientRecord } from "@/lib/api";
 import { slotLabel, slotShort } from "@/lib/slots";
 
-type Step = "phone" | "register" | "doctor" | "done";
+type Step = "phone" | "details" | "doctor" | "done";
 
 function digitsOnly(phone: string) {
   return phone.replace(/\D/g, "").slice(-10);
@@ -22,12 +22,8 @@ function CheckinInner() {
   const [step, setStep] = useState<Step>("phone");
   const [phone, setPhone] = useState("");
   const [patient, setPatient] = useState<PatientRecord | null>(null);
-  const [isNew, setIsNew] = useState(false);
   const [name, setName] = useState("");
   const [age, setAge] = useState(30);
-  const [address, setAddress] = useState("");
-  const [gender, setGender] = useState("");
-  const [emergencyContact, setEmergencyContact] = useState("");
   const [selDoctor, setSelDoctor] = useState<Doctor | null>(null);
   const [selSlot, setSelSlot] = useState("");
   const [token, setToken] = useState<number | null>(null);
@@ -72,20 +68,14 @@ function CheckinInner() {
       const found = await api.patientByPhone(hospitalRef, d);
       if (found) {
         setPatient(found);
-        setIsNew(false);
         setName(found.name);
         setAge(found.age);
-        setStep("doctor");
       } else {
         setPatient(null);
-        setIsNew(true);
         setName("");
         setAge(30);
-        setAddress("");
-        setGender("");
-        setEmergencyContact("");
-        setStep("register");
       }
+      setStep("details");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Lookup failed");
     } finally {
@@ -98,6 +88,10 @@ function CheckinInner() {
       setError("Pick a doctor");
       return;
     }
+    if (!name.trim()) {
+      setError("Enter your name");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
@@ -105,16 +99,12 @@ function CheckinInner() {
         phone: digitsOnly(phone),
         doctor_external_id: selDoctor.external_id,
         slot: selSlot || selDoctor.slots?.[0] || "morning",
-        name: isNew ? name : undefined,
-        age: isNew ? age : undefined,
-        address: isNew ? address : undefined,
-        gender: isNew ? gender : undefined,
-        emergency_contact: isNew ? emergencyContact : undefined,
+        name: name.trim(),
+        age,
       });
       setPatient(result.patient);
       setToken(result.appointment.token);
       setApptId(result.appointment.id);
-      setIsNew(result.is_new_patient);
       setStep("done");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Booking failed");
@@ -174,11 +164,13 @@ function CheckinInner() {
           </>
         )}
 
-        {step === "register" && (
+        {step === "details" && (
           <>
-            <p className="checkin-note">New patient — quick registration</p>
+            <p className="checkin-note">
+              {patient ? "We found your profile — confirm details" : "Enter your name to continue"}
+            </p>
             <label className="input-label">Full name</label>
-            <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
+            <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" autoFocus={!patient} />
             <label className="input-label" style={{ marginTop: 12 }}>Age</label>
             <input
               className="input"
@@ -188,42 +180,12 @@ function CheckinInner() {
               value={age}
               onChange={(e) => setAge(Number(e.target.value))}
             />
-            <label className="input-label" style={{ marginTop: 12 }}>Gender</label>
-            <select className="input" value={gender} onChange={(e) => setGender(e.target.value)}>
-              <option value="">Select gender</option>
-              <option value="female">Female</option>
-              <option value="male">Male</option>
-              <option value="other">Other</option>
-              <option value="prefer_not_to_say">Prefer not to say</option>
-            </select>
-            <label className="input-label" style={{ marginTop: 12 }}>Address</label>
-            <textarea
-              className="input"
-              rows={3}
-              value={address}
-              onChange={(e) => setAddress(e.target.value)}
-              placeholder="House / street, area, city"
-              style={{ resize: "vertical" }}
-            />
-            <label className="input-label" style={{ marginTop: 12 }}>Emergency contact</label>
-            <input
-              className="input"
-              inputMode="tel"
-              value={emergencyContact}
-              onChange={(e) => setEmergencyContact(e.target.value)}
-              placeholder="10-digit mobile number"
-            />
             <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
               <button className="btn btn-ghost" onClick={() => setStep("phone")}>Back</button>
               <button
                 className="btn btn-primary"
                 style={{ flex: 1 }}
-                disabled={
-                  !name.trim() ||
-                  !address.trim() ||
-                  !gender ||
-                  digitsOnly(emergencyContact).length !== 10
-                }
+                disabled={!name.trim()}
                 onClick={() => setStep("doctor")}
               >
                 Choose doctor →
@@ -235,8 +197,8 @@ function CheckinInner() {
         {step === "doctor" && (
           <>
             <p className="checkin-note">
-              {isNew ? "New" : "Welcome back"}, <strong>{isNew ? name : patient?.name}</strong>
-              {!isNew && patient?.phone ? ` · ${patient.phone}` : ""}
+              <strong>{name}</strong>
+              {digitsOnly(phone) ? ` · ${digitsOnly(phone)}` : ""}
             </p>
             <label className="input-label">Doctor</label>
             <div className="checkin-doc-list">
@@ -278,7 +240,7 @@ function CheckinInner() {
               </div>
             )}
             <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-              <button className="btn btn-ghost" onClick={() => setStep(isNew ? "register" : "phone")}>Back</button>
+              <button className="btn btn-ghost" onClick={() => setStep("details")}>Back</button>
               <button className="btn btn-primary" style={{ flex: 1 }} disabled={loading || !selDoctor} onClick={book}>
                 {loading ? "Booking…" : "Get token"}
               </button>
@@ -290,11 +252,13 @@ function CheckinInner() {
           <div style={{ textAlign: "center", padding: "8px 0" }}>
             <div className="checkin-ok">Token issued</div>
             <div className="checkin-token">{token}</div>
-            <div style={{ fontWeight: 600, fontSize: 18 }}>{patient?.name}</div>
+            <div style={{ fontWeight: 600, fontSize: 18 }}>{patient?.name || name}</div>
             <div className="muted" style={{ marginTop: 6 }}>
               {selDoctor?.name} · {selDoctor?.department} · {slotShort(selSlot)}
             </div>
-            {isNew && <div className="checkin-note" style={{ marginTop: 10 }}>Profile saved with this mobile number</div>}
+            <div className="checkin-note" style={{ marginTop: 10 }}>
+              SMS updates will go to {digitsOnly(phone)}
+            </div>
             <div style={{ display: "flex", gap: 8, marginTop: 20, justifyContent: "center" }}>
               {apptId && (
                 <Link href={`/my-ticket/${apptId}`} className="btn btn-primary">
@@ -309,9 +273,6 @@ function CheckinInner() {
                   setPatient(null);
                   setName("");
                   setAge(30);
-                  setAddress("");
-                  setGender("");
-                  setEmergencyContact("");
                   setSelDoctor(null);
                   setToken(null);
                   setApptId(null);

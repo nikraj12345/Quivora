@@ -28,11 +28,17 @@ def ensure_doctor_columns() -> None:
         ("is_on_break", "BOOLEAN DEFAULT false"),
         ("break_started_at", "TIMESTAMP WITH TIME ZONE"),
         ("delay_buffer_sec", "INTEGER DEFAULT 0"),
+        ("queue_epoch_at", "TIMESTAMP WITH TIME ZONE"),
     ]
     with engine.begin() as conn:
         for col, typedef in alters:
             if col not in existing:
                 conn.execute(text(f"ALTER TABLE doctors ADD COLUMN {col} {typedef}"))
+        # Fresh session tokens after upgrade / missing epoch
+        if "queue_epoch_at" not in existing or True:
+            conn.execute(text(
+                "UPDATE doctors SET queue_epoch_at = NOW() WHERE queue_epoch_at IS NULL"
+            ))
 
 
 def ensure_appointment_columns() -> None:

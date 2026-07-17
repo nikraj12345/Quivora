@@ -62,6 +62,7 @@ from app.services.self_checkin import (
     generate_hospital_qr_png,
     self_checkin,
 )
+from app.services import sms
 from app.worker.celery_app import create_train_job, run_bootstrap_training
 
 router = APIRouter()
@@ -114,6 +115,7 @@ def health(db: Session = Depends(get_db)):
         "redis": redis_ok,
         "telegram_enabled": bool(settings.telegram_bot_token),
         "telegram_bot_username": settings.telegram_bot_username or None,
+        **sms.sms_status(),
     }
 
 
@@ -394,16 +396,21 @@ def opd_summary(hospital_id: Optional[int] = None, db: Session = Depends(get_db)
 
     active_statuses = [AppointmentStatus.scheduled, AppointmentStatus.checked_in, AppointmentStatus.in_progress]
     appointment_filters = [Appointment.hospital_id == hospital_id] if hospital_id else []
+
+    from app.services.queue import session_day_bounds_utc
+    summary_hospital = db.get(Hospital, hospital_id) if hospital_id else None
+    day_start, day_end = session_day_bounds_utc(summary_hospital)
     patients_in_queue = db.execute(
         select(func.count()).select_from(Appointment).where(
             Appointment.status.in_(active_statuses),
+            Appointment.scheduled_at >= day_start,
+            Appointment.scheduled_at < day_end,
             *appointment_filters,
         )
     ).scalar() or 0
 
     summary_tz = ZoneInfo("UTC")
     if hospital_id:
-        summary_hospital = db.get(Hospital, hospital_id)
         if summary_hospital:
             try:
                 summary_tz = ZoneInfo(summary_hospital.timezone or "Asia/Kolkata")
@@ -586,6 +593,7 @@ def get_doctor(doctor_ref: str, db: Session = Depends(get_db)):
 def go_live(doctor_ref: str, slot: Optional[str] = None, db: Session = Depends(get_db)):
     from datetime import datetime, timezone
     from app.services.telegram_bot import notify_doctor_live
+    from app.services.queue import clear_session_queues
     from app.models import AppointmentStatus, Prediction, SLOT_ORDER, SLOT_LABELS
 
     d = _resolve_doctor(doctor_ref, db)
@@ -593,6 +601,14 @@ def go_live(doctor_ref: str, slot: Optional[str] = None, db: Session = Depends(g
     if slot and slot not in available:
         raise HTTPException(400, f"Doctor does not offer {slot}. Available: {', '.join(available)}")
     active = slot or available[0]
+
+    # New session: drop leftover queues from other slots / prior days
+    clear_session_queues(
+        db,
+        d,
+        keep_slot=active,
+        reason=f"New {active} session started — previous queue cleared",
+    )
 
     d.is_live = True
     d.is_on_break = False
@@ -607,28 +623,43 @@ def go_live(doctor_ref: str, slot: Optional[str] = None, db: Session = Depends(g
     from app.services.eta import recompute_doctor_queue_etas
     recompute_doctor_queue_etas(db, d.id)
 
+    from app.services.queue import session_day_bounds_utc
+    hospital = db.get(Hospital, d.hospital_id)
+    day_start, day_end = session_day_bounds_utc(hospital)
+
     waiting = db.execute(
         select(Appointment).where(
             Appointment.doctor_id == d.id,
             Appointment.slot == active,
             Appointment.status.in_([AppointmentStatus.scheduled, AppointmentStatus.checked_in]),
+            Appointment.scheduled_at >= day_start,
+            Appointment.scheduled_at < day_end,
         ).order_by(Appointment.token.asc())
     ).scalars().all()
 
     for appt in waiting:
-        if not appt.telegram_chat_id:
-            continue
         pred = db.execute(
             select(Prediction).where(Prediction.appointment_id == appt.id)
         ).scalar_one_or_none()
-        if not pred or not pred.eta_at:
+        if not pred or not pred.eta_at or not appt.patient:
             continue
         eta_time = pred.eta_at.astimezone().strftime("%-I:%M %p")
-        notify_doctor_live(
-            appt.telegram_chat_id,
+        service = f"{d.name} · {SLOT_LABELS.get(active, active)}"
+        if appt.telegram_chat_id:
+            notify_doctor_live(
+                appt.telegram_chat_id,
+                appt.patient.name,
+                appt.token,
+                service,
+                eta_time,
+                pred.confidence_min or 10.0,
+                pred.patients_ahead or 0,
+            )
+        sms.notify_doctor_live(
+            sms.phone_from_patient(appt.patient),
             appt.patient.name,
             appt.token,
-            f"{d.name} · {SLOT_LABELS.get(active, active)}",
+            service,
             eta_time,
             pred.confidence_min or 10.0,
             pred.patients_ahead or 0,
@@ -694,8 +725,11 @@ def start_break(doctor_ref: str, db: Session = Depends(get_db)):
     db.refresh(d)
     recompute_doctor_queue_etas(db, d.id)
     for appt in _waiting_in_active_slot(db, d):
-        if appt.telegram_chat_id and appt.patient:
+        if not appt.patient:
+            continue
+        if appt.telegram_chat_id:
             notify_break_started(appt.telegram_chat_id, appt.patient.name, appt.token, d.name)
+        sms.notify_break_started(sms.phone_from_patient(appt.patient), appt.patient.name, appt.token, d.name)
     return _doctor_out(db, d)
 
 
@@ -725,11 +759,13 @@ def end_break(doctor_ref: str, db: Session = Depends(get_db)):
     db.refresh(d)
     recompute_doctor_queue_etas(db, d.id)
     for appt in _waiting_in_active_slot(db, d):
-        if not appt.telegram_chat_id or not appt.patient:
+        if not appt.patient:
             continue
         pred = db.execute(select(Prediction).where(Prediction.appointment_id == appt.id)).scalar_one_or_none()
         eta_time = pred.eta_at.astimezone().strftime("%-I:%M %p") if pred and pred.eta_at else None
-        notify_break_ended(appt.telegram_chat_id, appt.patient.name, appt.token, d.name, eta_time)
+        if appt.telegram_chat_id:
+            notify_break_ended(appt.telegram_chat_id, appt.patient.name, appt.token, d.name, eta_time)
+        sms.notify_break_ended(sms.phone_from_patient(appt.patient), appt.patient.name, appt.token, d.name, eta_time)
     return _doctor_out(db, d)
 
 
@@ -748,17 +784,31 @@ def running_late(doctor_ref: str, body: RunningLateBody, db: Session = Depends(g
     db.refresh(d)
     recompute_doctor_queue_etas(db, d.id)
     for appt in _waiting_in_active_slot(db, d):
-        if not appt.telegram_chat_id or not appt.patient:
+        if not appt.patient:
             continue
         pred = db.execute(select(Prediction).where(Prediction.appointment_id == appt.id)).scalar_one_or_none()
         eta_time = pred.eta_at.astimezone().strftime("%-I:%M %p") if pred and pred.eta_at else None
-        notify_running_late(appt.telegram_chat_id, appt.patient.name, appt.token, d.name, body.minutes, eta_time)
+        if appt.telegram_chat_id:
+            notify_running_late(appt.telegram_chat_id, appt.patient.name, appt.token, d.name, body.minutes, eta_time)
+        sms.notify_running_late(
+            sms.phone_from_patient(appt.patient), appt.patient.name, appt.token, d.name, body.minutes, eta_time
+        )
     return _doctor_out(db, d)
 
 
 @router.post("/v1/doctors/{doctor_ref}/go-offline", response_model=DoctorOut, dependencies=[Depends(require_api_key)])
 def go_offline(doctor_ref: str, db: Session = Depends(get_db)):
+    from app.services.queue import clear_session_queues
+
     d = _resolve_doctor(doctor_ref, db)
+    ended_slot = d.active_slot or "session"
+    # Session ended — empty leftover waiting queue
+    clear_session_queues(
+        db,
+        d,
+        clear_all_waiting=True,
+        reason=f"{ended_slot.capitalize()} session ended — queue cleared",
+    )
     db.add(DoctorOpsEvent(doctor_id=d.id, event_type="go_offline"))
     d.is_live = False
     d.active_slot = None
@@ -781,6 +831,7 @@ def post_appointment(body: AppointmentCreate, db: Session = Depends(get_db)):
             age=body.age,
             patient_external_id=body.patient_external_id,
             patient_name=body.patient_name,
+            patient_phone=body.patient_phone,
             external_id=body.external_id,
             token=body.token,
             appointment_type=body.appointment_type,
@@ -817,6 +868,10 @@ def doctor_queue(doctor_ref: str, slot: Optional[str] = None, db: Session = Depe
     doctor_id = doctor.id
     recompute_doctor_queue_etas(db, doctor_id)
     from app.models import AppointmentStatus, SLOT_ORDER
+    from app.services.queue import session_day_bounds_utc
+
+    hospital = db.get(Hospital, doctor.hospital_id)
+    day_start, day_end = session_day_bounds_utc(hospital)
 
     stmt = (
         select(Appointment)
@@ -829,6 +884,8 @@ def doctor_queue(doctor_ref: str, slot: Optional[str] = None, db: Session = Depe
                     AppointmentStatus.in_progress,
                 ]
             ),
+            Appointment.scheduled_at >= day_start,
+            Appointment.scheduled_at < day_end,
         )
     )
     if slot:
@@ -900,6 +957,8 @@ def set_appointment_priority(appointment_id: int, body: PriorityUpdate, db: Sess
 
 @router.get("/v1/appointments/{appointment_id}/eta", response_model=EtaOut)
 def appointment_eta(appointment_id: int, db: Session = Depends(get_db)):
+    from app.services.queue import current_serving_token
+
     appt = db.get(Appointment, appointment_id)
     if not appt:
         raise HTTPException(404, "Not found")
@@ -907,17 +966,22 @@ def appointment_eta(appointment_id: int, db: Session = Depends(get_db)):
     db.refresh(appt)
     pred_sec, conf = predict_duration_sec(db, appt.doctor_id, appt.age_band)
     pred = db.execute(select(Prediction).where(Prediction.appointment_id == appt.id)).scalar_one_or_none()
+    doctor = appt.doctor
+    slot = appt.slot or "morning"
     return EtaOut(
         appointment_id=appt.id,
         token=appt.token,
         patient_name=appt.patient.name,
-        doctor_name=appt.doctor.name,
+        doctor_name=doctor.name if doctor else "",
         status=appt.status.value,
         patients_ahead=pred.patients_ahead if pred else 0,
         wait_seconds=pred.wait_seconds if pred else 0,
         eta_at=pred.eta_at if pred else None,
         confidence_min=pred.confidence_min if pred else conf,
         predicted_duration_sec=pred_sec,
+        current_token=current_serving_token(db, appt.doctor_id, slot),
+        slot=slot,
+        doctor_live=bool(doctor and doctor.is_live and (doctor.active_slot in (None, slot))),
     )
 
 
@@ -1068,16 +1132,24 @@ def scan_go_live(machine_ref: str, db: Session = Depends(get_db)):
     ).scalars().all()
 
     for appt in waiting:
-        if not appt.telegram_chat_id:
-            continue
         pred = db.execute(
             select(ScanPrediction).where(ScanPrediction.scan_appointment_id == appt.id)
         ).scalar_one_or_none()
-        if not pred or not pred.eta_at:
+        if not pred or not pred.eta_at or not appt.patient:
             continue
         eta_time = pred.eta_at.astimezone().strftime("%-I:%M %p")
-        notify_scan_live(
-            appt.telegram_chat_id,
+        if appt.telegram_chat_id:
+            notify_scan_live(
+                appt.telegram_chat_id,
+                appt.patient.name,
+                appt.token,
+                m.name,
+                eta_time,
+                pred.confidence_min or 10.0,
+                pred.patients_ahead or 0,
+            )
+        sms.notify_scan_live(
+            sms.phone_from_patient(appt.patient),
             appt.patient.name,
             appt.token,
             m.name,
@@ -1207,6 +1279,7 @@ def scan_event(body: ScanEventCreate, db: Session = Depends(get_db)):
     now = datetime.now(timezone.utc)
     et = body.event_type
     chat_id = appt.telegram_chat_id
+    phone = sms.phone_from_patient(appt.patient)
     machine = db.get(ScanMachine, appt.machine_id)
     machine_name = machine.name if machine else "Scan"
     patient_name = appt.patient.name if appt.patient else "Patient"
@@ -1218,6 +1291,7 @@ def scan_event(body: ScanEventCreate, db: Session = Depends(get_db)):
         appt.started_at = now
         if chat_id:
             tg_scan.notify_started(chat_id, patient_name, appt.token, machine_name)
+        sms.notify_started(phone, patient_name, appt.token, machine_name)
     elif et == "scan_ended":
         appt.status = ScanStatus.completed
         appt.ended_at = now
@@ -1226,10 +1300,12 @@ def scan_event(body: ScanEventCreate, db: Session = Depends(get_db)):
             record_scan_duration(db, appt.machine_id, machine.scan_type.value, appt.age_band, duration)
         if chat_id:
             tg_scan.notify_ended(chat_id, patient_name, machine_name)
+        sms.notify_ended(phone, patient_name, machine_name)
     elif et == "no_show":
         appt.status = ScanStatus.no_show
         if chat_id:
             tg_scan.notify_no_show(chat_id, patient_name, appt.token)
+        sms.notify_no_show(phone, patient_name, appt.token)
     else:
         raise HTTPException(400, f"Unknown event type: {et}")
 

@@ -6,22 +6,10 @@ import { ReactNode, useMemo } from "react";
 import { RoleSwitcher } from "@/components/RoleSwitcher";
 import { useRole } from "@/lib/role";
 
-const NAV_ICONS: Record<string, string> = {
-  "▣": "H",
-  "⚙": "⚙",
-  "⌂": "⌂",
-  "✚": "+",
-  "▦": "▦",
-  "📊": "◈",
-  "📋": "▤",
-  "🩺": "◉",
-  "🔬": "◎",
-  "👤": "Dr",
-};
-
 export function Shell({ children, title, subtitle }: { children: ReactNode; title?: string; subtitle?: string }) {
   const pathname = usePathname();
   const { mode, hospital, hospitalId, doctor } = useRole();
+  const hid = hospitalId || hospital?.id;
 
   const sections = useMemo(() => {
     if (mode === "admin") {
@@ -29,8 +17,8 @@ export function Shell({ children, title, subtitle }: { children: ReactNode; titl
         {
           label: "Platform",
           links: [
-            { href: "/admin", icon: "▣", label: "Hospitals" },
-            { href: "/training", icon: "⚙", label: "Training" },
+            { href: "/admin", label: "Hospitals" },
+            { href: "/training", label: "Training" },
           ],
         },
       ];
@@ -38,11 +26,11 @@ export function Shell({ children, title, subtitle }: { children: ReactNode; titl
     if (mode === "patient") {
       return [
         {
-          label: "Patient",
+          label: "Care",
           links: [
-            { href: "/patient-portal", icon: "⌂", label: "My care" },
-            { href: hospitalId ? `/checkin?hospital=${hospitalId}` : "/checkin", icon: "✚", label: "Self check-in" },
-            { href: hospitalId ? `/register?hospital=${hospitalId}&source=patient` : "/register", icon: "✚", label: "Book visit" },
+            { href: "/patient-portal", label: "Home" },
+            { href: hid ? `/register?hospital=${hid}&source=patient` : "/register", label: "Book" },
+            { href: hid ? `/checkin?hospital=${hid}` : "/checkin", label: "Check in" },
           ],
         },
       ];
@@ -50,76 +38,89 @@ export function Shell({ children, title, subtitle }: { children: ReactNode; titl
     if (mode === "doctor") {
       return [
         {
-          label: "Doctor",
+          label: "Clinic",
           links: [
-            { href: "/doctor", icon: "👤", label: "My Patients" },
-            ...(doctor
-              ? [{ href: `/room/${doctor.external_id}`, icon: "🩺", label: "Consultation Room" }]
-              : []),
+            { href: "/doctor", label: "My patients" },
+            ...(doctor ? [{ href: `/room/${doctor.external_id}`, label: "Room" }] : []),
           ],
         },
       ];
     }
-    const hid = hospitalId || hospital?.id;
+    // Hospital — slim primary nav (fewer clicks)
     return [
       {
-        label: "Hospital",
+        label: "Today",
         links: [
-          { href: hid ? `/hospital/${hid}` : "/hospital", icon: "⌂", label: "Console" },
-          { href: "/ops", icon: "▦", label: "Dashboard" },
-          { href: "/doctors", icon: "👤", label: "Manage Doctors" },
-          { href: "/scans", icon: "🔬", label: "Manage Scans" },
-          { href: "/insights", icon: "📊", label: "Insights" },
+          { href: "/reception", label: "Board" },
+          { href: hid ? `/register?hospital=${hid}&source=hospital` : "/register", label: "Register" },
+          { href: "/doctors", label: "Doctors" },
+          { href: "/insights", label: "Insights" },
+        ],
+      },
+      {
+        label: "More",
+        links: [
+          { href: hid ? `/hospital/${hid}` : "/hospital", label: "Hospital" },
+          { href: "/scans", label: "Scans" },
+          { href: "/opd", label: "Queues" },
         ],
       },
     ];
-  }, [mode, hospital, hospitalId, doctor]);
+  }, [mode, hospital, hospitalId, doctor, hid]);
+
+  const isActive = (href: string) => {
+    const linkPath = href.split("?")[0];
+    if (linkPath === "/reception") return pathname.startsWith("/reception") || pathname.startsWith("/room");
+    if (linkPath === "/register") return pathname.startsWith("/register");
+    if (linkPath === "/doctors") return pathname.startsWith("/doctors");
+    if (linkPath === "/insights") return pathname.startsWith("/insights");
+    if (linkPath.startsWith("/hospital")) return pathname.startsWith("/hospital");
+    if (linkPath === "/admin") return pathname.startsWith("/admin");
+    if (linkPath === "/patient-portal") return pathname.startsWith("/patient-portal");
+    if (linkPath === "/doctor") return pathname === "/doctor";
+    return pathname.startsWith(linkPath);
+  };
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <Link href="/dashboard" className="sidebar-logo" title="Back to Quivora home">
+        <Link href="/dashboard" className="sidebar-logo" title="Quivora home">
           <div className="logo-mark">Q</div>
-          <div className="logo-name">Quivora</div>
-          <div className="logo-sub">
-            {mode === "admin" ? "Platform" : mode === "patient" ? "Patient" : mode === "doctor" ? "Doctor" : "Hospital Ops"}
+          <div>
+            <div className="logo-name">Quivora</div>
+            <div className="logo-sub">
+              {mode === "admin" ? "Platform" : mode === "patient" ? "Patient" : mode === "doctor" ? "Doctor" : "Hospital"}
+            </div>
           </div>
         </Link>
 
-        <div className="sidebar-nav">
+        <nav className="sidebar-nav">
           {sections.map((section) => (
             <div key={section.label}>
               <div className="sidebar-section">{section.label}</div>
-              {section.links.map((l) => {
-                const linkPath = l.href.split("?")[0];
-                const active =
-                  linkPath === "/" || linkPath === "/admin" || linkPath === "/patient-portal" || linkPath === "/hospital"
-                    ? pathname === linkPath || (linkPath.startsWith("/hospital") && pathname.startsWith("/hospital"))
-                    : pathname.startsWith(linkPath);
-                return (
-                  <Link key={l.href} href={l.href} className={`sidebar-link ${active ? "active" : ""}`}>
-                    <span className="nav-icon">{NAV_ICONS[l.icon] ?? l.icon}</span>
-                    {l.label}
-                  </Link>
-                );
-              })}
+              {section.links.map((l) => (
+                <Link key={l.href} href={l.href} className={`sidebar-link ${isActive(l.href) ? "active" : ""}`}>
+                  {l.label}
+                </Link>
+              ))}
             </div>
           ))}
-        </div>
+        </nav>
 
         <div className="sidebar-foot">
-          <p>{hospital ? hospital.name : "Select hospital from top-right"}</p>
+          <p>{hospital?.name || "Pick a hospital →"}</p>
         </div>
       </aside>
 
       <div className="main-content">
-        <div className="topbar">
-          {title && <span className="topbar-title">{title}</span>}
-          {subtitle && <span className="topbar-sub">{subtitle}</span>}
-          <span className="topbar-live"><i /> Care in motion</span>
+        <header className="topbar">
+          <div className="topbar-text">
+            {title && <h1 className="topbar-title">{title}</h1>}
+            {subtitle && <p className="topbar-sub">{subtitle}</p>}
+          </div>
           <RoleSwitcher />
-        </div>
-        <div className="page-body">{children}</div>
+        </header>
+        <main className="page-body">{children}</main>
       </div>
     </div>
   );

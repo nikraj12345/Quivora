@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { Shell } from "@/components/Shell";
+import { DoctorLiveToggle } from "@/components/DoctorLiveToggle";
 import { api, Appointment, Doctor, QueueItem } from "@/lib/api";
 import { slotShort } from "@/lib/slots";
 
@@ -46,35 +47,6 @@ export default function RoomPage() {
   const isLive = doctor?.is_live ?? false;
   const onBreak = doctor?.is_on_break ?? false;
   const viewingActiveSlot = isLive && doctor?.active_slot === viewSlot;
-
-  const goLiveForSlot = async (slot: string) => {
-    setLoading(true);
-    try {
-      const updated = await api.goLive(slug, slot);
-      setDoctor(updated);
-      setViewSlot(slot);
-      setMsg(`Live for ${slotShort(slot)} — ETAs active for this slot only.`);
-      await refresh();
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : "Error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const goOffline = async () => {
-    setLoading(true);
-    try {
-      const updated = await api.goOffline(slug);
-      setDoctor(updated);
-      setMsg("Gone offline. Timings paused.");
-      await refresh();
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : "Error");
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const toggleBreak = async () => {
     setLoading(true); setMsg("");
@@ -122,59 +94,55 @@ export default function RoomPage() {
 
   return (
     <Shell
-      title={doctor?.name ?? "Consultation Room"}
-      subtitle={doctor ? `${doctor.department} · ${doctor.hospital_name}` : ""}
+      title={doctor?.name ?? "Room"}
+      subtitle={doctor ? doctor.department : ""}
     >
       {doctor && (
-        <div className="card" style={{ padding: "16px 20px", marginBottom: 16 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-              <span className={isLive ? "badge badge-live" : "badge badge-off"} style={{ fontSize: 13, padding: "4px 12px" }}>
-                <span className={isLive ? "dot-live" : "dot-off"} />
-                {onBreak
-                  ? "On break"
-                  : isLive
-                    ? `Live · ${slotShort(doctor.active_slot)}`
-                    : "Offline"}
+        <div className="room-toolbar">
+          <div className="room-toolbar-meta">
+            <DoctorLiveToggle
+              externalId={slug}
+              isLive={isLive}
+              slots={slots}
+              activeSlot={viewSlot || doctor.active_slot}
+              size="md"
+              disabled={loading}
+              onChanged={(updated) => {
+                setDoctor(updated);
+                if (updated.active_slot) setViewSlot(updated.active_slot);
+                setMsg(
+                  updated.is_live
+                    ? `Live for ${slotShort(updated.active_slot)} — ETAs active.`
+                    : "Gone offline. Queue for this session cleared."
+                );
+                refresh();
+              }}
+              onError={setMsg}
+            />
+            {onBreak && <span className="badge badge-warn">On break</span>}
+            {doctor.delay_buffer_sec > 0 && (
+              <span className="badge badge-warn">
+                +{Math.round(doctor.delay_buffer_sec / 60)}m late
               </span>
-              {doctor.delay_buffer_sec > 0 && (
-                <span className="badge badge-warn" style={{ fontSize: 12 }}>
-                  +{Math.round(doctor.delay_buffer_sec / 60)}m late
-                </span>
-              )}
-              <span style={{ fontSize: 13, color: "var(--muted)" }}>
-                {doctor.avg_duration_sec ? `avg ${Math.round(doctor.avg_duration_sec / 60)} min` : "No samples"} · {doctor.sample_count} samples
-              </span>
-            </div>
-            {isLive ? (
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button className="btn btn-secondary" disabled={loading} onClick={toggleBreak}>
-                  {onBreak ? "End break" : "Start break"}
-                </button>
-                <button className="btn btn-secondary" disabled={loading || onBreak} onClick={() => broadcastLate(15)}>
-                  +15 min late
-                </button>
-                <button className="btn btn-secondary" disabled={loading} onClick={goOffline}>Go Offline</button>
-              </div>
-            ) : null}
+            )}
+            <span>
+              {doctor.avg_duration_sec ? `avg ${Math.round(doctor.avg_duration_sec / 60)} min` : "No samples"}
+              {" · "}{doctor.sample_count} samples
+            </span>
           </div>
-
-          {!isLive && (
-            <div>
-              <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>Go live for a session slot:</div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {slots.map((s) => (
-                  <button key={s} className="btn btn-primary btn-sm" disabled={loading} onClick={() => goLiveForSlot(s)}>
-                    Start {slotShort(s)}
-                  </button>
-                ))}
-              </div>
+          {isLive && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button className="btn btn-secondary btn-sm" disabled={loading} onClick={toggleBreak}>
+                {onBreak ? "End break" : "Start break"}
+              </button>
+              <button className="btn btn-secondary btn-sm" disabled={loading || onBreak} onClick={() => broadcastLate(15)}>
+                +15 min late
+              </button>
             </div>
           )}
         </div>
       )}
 
-      {/* Slot tabs */}
       <div style={{ marginBottom: 16, overflowX: "auto" }}>
         <div className="tab-bar" style={{ display: "inline-flex" }}>
           {slots.map((s) => {
@@ -182,7 +150,7 @@ export default function RoomPage() {
             return (
               <button key={s} className={`tab-btn ${viewSlot === s ? "active" : ""}`} onClick={() => setViewSlot(s)}>
                 {slotShort(s)} ({count})
-                {isLive && doctor?.active_slot === s ? " ●" : ""}
+                {isLive && doctor?.active_slot === s ? " · live" : ""}
               </button>
             );
           })}
@@ -190,24 +158,24 @@ export default function RoomPage() {
       </div>
 
       {!viewingActiveSlot && doctor && (
-        <div style={{ padding: "12px 16px", background: "var(--warn-light)", border: "1px solid #fde68a", borderRadius: 10, marginBottom: 16, fontSize: 13, color: "var(--warn)" }}>
+        <div className="alert alert-warn" style={{ marginBottom: 16 }}>
           {isLive
-            ? `Doctor is live for ${doctor.active_slot} — ETAs only apply to that slot. Viewing ${viewSlot}.`
-            : "Doctor is offline — pick a slot above to go live. ETA starts only for the active slot."}
+            ? `Live for ${doctor.active_slot} — ETAs apply to that slot only. Viewing ${viewSlot}.`
+            : "Offline — turn Live on above. ETA starts only for the active slot."}
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, opacity: viewingActiveSlot ? 1 : 0.7, pointerEvents: viewingActiveSlot ? "auto" : "none" }}>
-        <div className="card">
-          <div className="card-header">
-            <span className="card-title">Now serving · {viewSlot}</span>
+      <div className={`room-grid ${viewingActiveSlot ? "" : "room-dimmed"}`}>
+        <div className="room-panel">
+          <div className="room-panel-head">
+            <h2 className="room-panel-title">Now serving · {slotShort(viewSlot)}</h2>
           </div>
-          <div style={{ padding: 20 }}>
+          <div className="room-panel-body">
             {current && slotQueue.some((q) => q.appointment_id === current.id && q.status === "in_progress") ? (
               <div>
                 <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 8 }}>
-                  <span style={{ fontSize: 48, fontWeight: 800, color: "var(--accent)", lineHeight: 1 }}>#{current.token}</span>
-                  <span style={{ fontSize: 12, padding: "2px 8px", background: "var(--surface-2)", borderRadius: 6, color: "var(--muted)" }}>{AGE_LABELS[current.age_band] ?? current.age_band}</span>
+                  <span className="room-now-token">#{current.token}</span>
+                  <span className="badge badge-off">{AGE_LABELS[current.age_band] ?? current.age_band}</span>
                 </div>
                 <div style={{ fontSize: 18, fontWeight: 600 }}>{current.patient_name}</div>
                 <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>Age {current.age} · {current.appointment_type} visit</div>
@@ -222,7 +190,7 @@ export default function RoomPage() {
                 </div>
               </div>
             ) : (
-              <p style={{ color: "var(--muted)", fontSize: 13 }}>No patient in room for this slot. Call someone from the queue.</p>
+              <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>No patient in room. Call someone from the queue.</p>
             )}
             {msg && (
               <div style={{ marginTop: 16, padding: "8px 12px", background: "var(--surface-2)", borderRadius: 8, fontSize: 13, color: "var(--ink-2)" }}>{msg}</div>
@@ -230,14 +198,14 @@ export default function RoomPage() {
           </div>
         </div>
 
-        <div className="card">
-          <div className="card-header">
-            <span className="card-title">{slotShort(viewSlot)}</span>
+        <div className="room-panel">
+          <div className="room-panel-head">
+            <h2 className="room-panel-title">{slotShort(viewSlot)} queue</h2>
             <span style={{ fontSize: 13, color: "var(--muted)" }}>{waiting.length} waiting</span>
           </div>
           <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 6 }}>
             {waiting.length === 0 ? (
-              <p style={{ fontSize: 13, color: "var(--muted-2)", padding: "8px 0" }}>Queue empty for this slot</p>
+              <p style={{ fontSize: 13, color: "var(--muted-2)", padding: "8px 0", margin: 0 }}>Queue empty</p>
             ) : (
               waiting.map((q, idx) => (
                 <div key={q.appointment_id} className="queue-row">
@@ -276,9 +244,9 @@ export default function RoomPage() {
                       title="Promote to Emergency"
                       onClick={() => act("emergency_insert", q.appointment_id)}
                     >
-                      ⚡
+                      Emer
                     </button>
-                    <button className="btn btn-secondary btn-sm" disabled={loading} onClick={() => act("no_show", q.appointment_id)}>✗</button>
+                    <button className="btn btn-secondary btn-sm" disabled={loading} onClick={() => act("no_show", q.appointment_id)}>Skip</button>
                   </div>
                 </div>
               ))

@@ -174,6 +174,9 @@ export type Eta = {
   eta_at: string | null;
   confidence_min: number;
   predicted_duration_sec: number;
+  current_token?: number | null;
+  slot?: string | null;
+  doctor_live?: boolean;
 };
 
 export type OpdSummary = {
@@ -353,7 +356,7 @@ export type ScanEta = {
 };
 
 export const api = {
-  health: () => request<{ status: string; postgres: boolean; redis: boolean; telegram_enabled: boolean; telegram_bot_username: string | null }>("/health"),
+  health: () => request<{ status: string; postgres: boolean; redis: boolean; telegram_enabled: boolean; telegram_bot_username: string | null; sms_enabled: boolean; sms_provider: string | null }>("/health"),
   opdSummary: (hospital_id?: number) =>
     request<OpdSummary>(`/v1/opd/summary${hospital_id ? `?hospital_id=${hospital_id}` : ""}`),
   hospitals: () => request<Hospital[]>("/v1/hospitals"),
@@ -401,6 +404,7 @@ export const api = {
   createAppointment: (body: {
     doctor_external_id: string;
     patient_name: string;
+    patient_phone?: string;
     age: number;
     appointment_type?: string;
     slot?: string;

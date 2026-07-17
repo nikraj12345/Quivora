@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Shell } from "@/components/Shell";
+import { DoctorLiveToggle } from "@/components/DoctorLiveToggle";
 import { api, ReceptionBoard } from "@/lib/api";
 import { useRole } from "@/lib/role";
 import { formatWorkDaysList } from "@/lib/weekdays";
@@ -10,15 +11,8 @@ import { slotShort } from "@/lib/slots";
 
 function initials(name: string) {
   const parts = name.replace(/^Dr\.?\s*/i, "").split(/\s+/);
-  return (parts[0]?.[0] || "") + (parts[1]?.[0] || parts[0]?.[1] || "");
+  return ((parts[0]?.[0] || "") + (parts[1]?.[0] || "")).toUpperCase();
 }
-
-const STATUS_META: Record<string, { label: string; badge: string; tile: string }> = {
-  live: { label: "Live", badge: "badge-live", tile: "doctor-tile--live" },
-  break: { label: "On break", badge: "badge-warn", tile: "doctor-tile--break" },
-  offline: { label: "Offline", badge: "badge-off", tile: "doctor-tile--offline" },
-  unavailable: { label: "Unavailable", badge: "badge-off", tile: "doctor-tile--offline" },
-};
 
 export default function ReceptionBoardPage() {
   const { hospital, hospitalId, setMode } = useRole();
@@ -66,31 +60,36 @@ export default function ReceptionBoardPage() {
   }, [doctors]);
 
   return (
-    <Shell title="Today's board" subtitle={board?.hospital_name || hospital?.name || "Reception"}>
+    <Shell title="Board" subtitle={board?.hospital_name || hospital?.name || undefined}>
       {!hid ? (
-        <div className="card" style={{ padding: 32 }}>
-          <p style={{ color: "var(--muted)", margin: 0 }}>Select a hospital from the top-right switcher.</p>
-        </div>
+        <p className="empty-hint">Select a hospital from the top-right menu to open today’s board.</p>
       ) : (
         <>
           {error && <div className="alert alert-error">{error}</div>}
 
           {board && (
             <>
-              <div className="page-grid-stats">
-                {[
-                  { label: "Doctors", value: board.summary.doctors_total },
-                  { label: "Live now", value: board.summary.doctors_live, cls: "stat-card--live" },
-                  { label: "On break", value: board.summary.doctors_on_break, cls: "stat-card--warn" },
-                  { label: "Waiting", value: board.summary.patients_waiting },
-                ].map((s) => (
-                  <div key={s.label} className={`stat-card ${s.cls || ""}`}>
-                    <div className="stat-label">{s.label}</div>
-                    <div className="stat-value" style={s.cls === "stat-card--live" ? { color: "var(--ok)" } : undefined}>
-                      {s.value}
-                    </div>
+              <div className="board-hero">
+                <div className="board-hero-stats">
+                  <div>
+                    <span className="board-hero-num">{board.summary.doctors_live}</span>
+                    <span className="board-hero-label">live</span>
                   </div>
-                ))}
+                  <div>
+                    <span className="board-hero-num">{board.summary.patients_waiting}</span>
+                    <span className="board-hero-label">waiting</span>
+                  </div>
+                  <div>
+                    <span className="board-hero-num">{board.summary.doctors_on_break}</span>
+                    <span className="board-hero-label">on break</span>
+                  </div>
+                </div>
+                <Link
+                  href={`/register?hospital=${board.hospital_id}&source=hospital`}
+                  className="btn btn-primary"
+                >
+                  Register patient
+                </Link>
               </div>
 
               <div className="board-toolbar">
@@ -101,95 +100,82 @@ export default function ReceptionBoardPage() {
                     ["waiting", "Has queue"],
                     ["offline", "Offline"],
                   ] as const).map(([key, label]) => (
-                    <button key={key} type="button" className={`tab-btn ${filter === key ? "active" : ""}`} onClick={() => setFilter(key)}>
+                    <button
+                      key={key}
+                      type="button"
+                      className={`tab-btn ${filter === key ? "active" : ""}`}
+                      onClick={() => setFilter(key)}
+                    >
                       {label}
                     </button>
                   ))}
                 </div>
-                <div className="board-meta">
-                  <span className="pulse" />
-                  Live · refreshes every 5s · {new Date(board.generated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                </div>
+                <span className="board-meta">Updates every 5s</span>
               </div>
 
               {byDept.map(([dept, docs]) => (
-                <div key={dept} className="dept-block">
+                <section key={dept} className="dept-block">
                   <div className="dept-header">
-                    <h3>{dept}</h3>
-                    <span>{docs.length} doctor{docs.length !== 1 ? "s" : ""}</span>
+                    <h2>{dept}</h2>
+                    <span>{docs.length}</span>
                   </div>
                   <div className="doctor-grid">
-                    {docs.map((d) => {
-                      const meta = STATUS_META[d.status] || STATUS_META.offline;
-                      return (
-                        <div key={d.id} className={`doctor-tile ${meta.tile}`}>
-                          <div className="doctor-tile-head">
-                            <div className="doctor-avatar">{initials(d.name)}</div>
-                            <div className="doctor-tile-info">
-                              <div className="doctor-tile-name">{d.name}</div>
-                              <div className="doctor-tile-meta">
-                                {formatWorkDaysList(d.work_days)}
-                                {!d.works_today && <span style={{ color: "var(--warn)" }}> · off today</span>}
-                              </div>
-                            </div>
-                            <span className={`badge ${meta.badge}`}>{meta.label}</span>
+                    {docs.map((d) => (
+                      <article
+                        key={d.id}
+                        className={`doctor-tile doctor-tile--${d.status}`}
+                      >
+                        <div className="doctor-tile-head">
+                          <div className="doctor-avatar">{initials(d.name)}</div>
+                          <div className="doctor-tile-info">
+                            <h3 className="doctor-tile-name">{d.name}</h3>
+                            <p className="doctor-tile-meta">
+                              {formatWorkDaysList(d.work_days)}
+                              {!d.works_today && " · off today"}
+                            </p>
                           </div>
-
-                          <div className="metric-row">
-                            <div className="metric-box">
-                              <div className="metric-box-label">In queue</div>
-                              <div className="metric-box-value">
-                                {d.queue_total}
-                                {d.is_live && (
-                                  <span style={{ fontSize: 11, fontWeight: 500, color: "var(--muted)", marginLeft: 4 }}>
-                                    ({d.queue_active_slot} active)
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                            <div className="metric-box">
-                              <div className="metric-box-label">Longest wait</div>
-                              <div className={`metric-box-value ${(d.longest_wait_min ?? 0) > 30 ? "metric-box-value--warn" : ""}`}>
-                                {d.longest_wait_min != null ? `${d.longest_wait_min}m` : "—"}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="doctor-tile-status">
-                            {d.current_token != null ? (
-                              <>Now serving <strong>#{d.current_token}</strong> · {d.current_patient}</>
-                            ) : d.is_live ? (
-                              <span style={{ color: "var(--muted)" }}>Room empty · {slotShort(d.active_slot)}</span>
-                            ) : (
-                              <span style={{ color: "var(--muted)" }}>Not started · {d.slots.map(slotShort).join(", ")}</span>
-                            )}
-                            {d.delay_buffer_sec > 0 && (
-                              <div style={{ marginTop: 6, color: "var(--warn)", fontSize: 11 }}>
-                                ~{Math.round(d.delay_buffer_sec / 60)} min behind schedule
-                              </div>
-                            )}
-                          </div>
-
-                          <div className="doctor-tile-actions">
-                            <Link href={`/room/${d.external_id}`} className="btn btn-primary btn-sm">Room</Link>
-                            <Link
-                              href={`/register?hospital=${board.hospital_id}&doctor=${encodeURIComponent(d.external_id)}`}
-                              className="btn btn-secondary btn-sm"
-                            >
-                              Register
-                            </Link>
-                          </div>
+                          <DoctorLiveToggle
+                            externalId={d.external_id}
+                            isLive={d.is_live}
+                            slots={d.slots}
+                            activeSlot={d.active_slot}
+                            onChanged={() => load()}
+                            onError={setError}
+                          />
                         </div>
-                      );
-                    })}
+
+                        <div className="doctor-tile-status">
+                          {d.current_token != null ? (
+                            <>Serving <strong>#{d.current_token}</strong> · {d.current_patient}</>
+                          ) : d.is_live ? (
+                            <>Room open · {slotShort(d.active_slot)} · {d.queue_active_slot} in queue</>
+                          ) : (
+                            <>{d.queue_total} waiting · {d.slots.map(slotShort).join(", ")}</>
+                          )}
+                          {d.longest_wait_min != null && d.longest_wait_min > 0 && (
+                            <span className="wait-chip">{d.longest_wait_min}m wait</span>
+                          )}
+                        </div>
+
+                        <div className="doctor-tile-actions">
+                          <Link href={`/room/${d.external_id}`} className="btn btn-primary btn-sm">
+                            Open room
+                          </Link>
+                          <Link
+                            href={`/register?hospital=${board.hospital_id}&doctor=${encodeURIComponent(d.external_id)}`}
+                            className="btn btn-ghost btn-sm"
+                          >
+                            Book
+                          </Link>
+                        </div>
+                      </article>
+                    ))}
                   </div>
-                </div>
+                </section>
               ))}
 
               {doctors.length === 0 && (
-                <div className="card" style={{ padding: 48, textAlign: "center", color: "var(--muted)" }}>
-                  No doctors match this filter.
-                </div>
+                <p className="empty-hint">No doctors match this filter.</p>
               )}
             </>
           )}

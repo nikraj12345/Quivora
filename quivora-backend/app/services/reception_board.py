@@ -35,12 +35,17 @@ def works_today(work_days: list[str], now: datetime | None = None) -> bool:
 
 
 def build_reception_board(db: Session, hospital_id: int, hospital_name: str) -> ReceptionBoardOut:
+    from app.models import Hospital
+    from app.services.queue import session_day_bounds_utc
+
     now = datetime.now(timezone.utc)
     active_statuses = [
         AppointmentStatus.scheduled,
         AppointmentStatus.checked_in,
         AppointmentStatus.in_progress,
     ]
+    hospital = db.get(Hospital, hospital_id)
+    day_start, day_end = session_day_bounds_utc(hospital, now)
 
     doctors = db.execute(
         select(Doctor).where(Doctor.hospital_id == hospital_id).order_by(Doctor.department, Doctor.name)
@@ -60,6 +65,8 @@ def build_reception_board(db: Session, hospital_id: int, hospital_name: str) -> 
             .where(
                 Appointment.doctor_id == d.id,
                 Appointment.status.in_(active_statuses),
+                Appointment.scheduled_at >= day_start,
+                Appointment.scheduled_at < day_end,
             )
             .order_by(Appointment.token.asc())
         ).scalars().all()

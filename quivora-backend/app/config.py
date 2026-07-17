@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     # When set, every new appointment is auto-linked to this chat (for testing).
     # Use @username or a numeric chat_id. Patient still gets the bot link too.
     telegram_test_recipient: str = ""
+    # India SMS: auto | fast2sms | log | off
+    # auto → Fast2SMS when API key set, else free local log fallback
+    sms_provider: str = "auto"
+    # Free signup credit at https://www.fast2sms.com — Quick route (no DLT)
+    fast2sms_api_key: str = ""
 
     class Config:
         env_prefix = "QUIVORA_"
