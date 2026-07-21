@@ -20,12 +20,15 @@ from app.schemas import (
     AppointmentOut,
     DepartmentCreate,
     DepartmentOut,
+    DoctorAvailabilityOut,
     DoctorCreate,
+    DoctorDayScheduleOut,
     DoctorOut,
     DoctorUpdate,
     EtaOut,
     EventCreate,
     HealthOut,
+    HospitalAvailabilityOut,
     HospitalCreate,
     HospitalOut,
     HospitalQrInfoOut,
@@ -51,6 +54,16 @@ from app.schemas import (
     TrainStatusOut,
 )
 from app.services.eta import predict_duration_sec, recompute_doctor_queue_etas
+from app.services.availability import (
+    build_doctor_availability,
+    build_doctor_day_schedule,
+    build_hospital_availability,
+    day_anchor_utc,
+    local_today,
+    parse_appointment_date,
+    parse_schedule_date,
+    validate_appointment_date,
+)
 from app.services.insights import build_hospital_insights
 from app.services.queue import apply_event, create_appointment
 from app.services.scan_eta import predict_scan_duration, record_scan_duration, recompute_scan_queue_etas
@@ -89,6 +102,7 @@ def appt_out(db: Session, appt: Appointment) -> AppointmentOut:
         slot=appt.slot or "morning",
         priority=getattr(appt, "priority", None) or "normal",
         priority_reason=getattr(appt, "priority_reason", None),
+        scheduled_at=appt.scheduled_at,
         started_at=appt.started_at,
         ended_at=appt.ended_at,
     )
@@ -274,6 +288,7 @@ def hospital_self_checkin(hospital_ref: str, body: SelfCheckinBody, db: Session 
             address=body.address,
             gender=body.gender,
             emergency_contact=body.emergency_contact,
+            appointment_date=body.appointment_date,
         )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
@@ -822,6 +837,46 @@ def go_offline(doctor_ref: str, db: Session = Depends(get_db)):
     return _doctor_out(db, d)
 
 
+@router.get("/v1/hospitals/{hospital_ref}/availability", response_model=HospitalAvailabilityOut)
+def hospital_availability(hospital_ref: str, date: Optional[str] = None, db: Session = Depends(get_db)):
+    hospital = _resolve_hospital(hospital_ref, db)
+    try:
+        target = parse_appointment_date(date, hospital)
+        validate_appointment_date(target, hospital)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return build_hospital_availability(db, hospital, target)
+
+
+@router.get("/v1/doctors/{doctor_ref}/availability", response_model=DoctorAvailabilityOut)
+def doctor_availability(doctor_ref: str, date: Optional[str] = None, db: Session = Depends(get_db)):
+    doctor = _resolve_doctor(doctor_ref, db)
+    hospital = db.get(Hospital, doctor.hospital_id)
+    try:
+        target = parse_appointment_date(date, hospital)
+        validate_appointment_date(target, hospital)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return build_doctor_availability(db, doctor, hospital, target)
+
+
+@router.get("/v1/doctors/{doctor_ref}/schedule", response_model=DoctorDayScheduleOut)
+def doctor_schedule(doctor_ref: str, date: Optional[str] = None, db: Session = Depends(get_db)):
+    doctor = _resolve_doctor(doctor_ref, db)
+    hospital = db.get(Hospital, doctor.hospital_id)
+    try:
+        target = parse_schedule_date(date, hospital)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return build_doctor_day_schedule(
+        db,
+        doctor,
+        hospital,
+        target,
+        appointment_mapper=lambda appt: appt_out(db, appt),
+    )
+
+
 @router.post("/v1/appointments", response_model=AppointmentOut, dependencies=[Depends(require_api_key)])
 def post_appointment(body: AppointmentCreate, db: Session = Depends(get_db)):
     try:
@@ -837,6 +892,7 @@ def post_appointment(body: AppointmentCreate, db: Session = Depends(get_db)):
             appointment_type=body.appointment_type,
             slot=body.slot,
             scheduled_at=body.scheduled_at,
+            appointment_date=body.appointment_date,
             priority=body.priority,
             priority_reason=body.priority_reason,
         )
@@ -863,15 +919,26 @@ def post_event(body: EventCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/v1/doctors/{doctor_ref}/queue", response_model=list[QueueItemOut])
-def doctor_queue(doctor_ref: str, slot: Optional[str] = None, db: Session = Depends(get_db)):
+def doctor_queue(
+    doctor_ref: str,
+    slot: Optional[str] = None,
+    date: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     doctor = _resolve_doctor(doctor_ref, db)
     doctor_id = doctor.id
-    recompute_doctor_queue_etas(db, doctor_id)
     from app.models import AppointmentStatus, SLOT_ORDER
     from app.services.queue import session_day_bounds_utc
 
     hospital = db.get(Hospital, doctor.hospital_id)
-    day_start, day_end = session_day_bounds_utc(hospital)
+    try:
+        target = parse_appointment_date(date, hospital)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    when = day_anchor_utc(target, hospital)
+    day_start, day_end = session_day_bounds_utc(hospital, when)
+    if target == local_today(hospital):
+        recompute_doctor_queue_etas(db, doctor_id)
 
     stmt = (
         select(Appointment)

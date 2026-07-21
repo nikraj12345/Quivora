@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import re
+from datetime import date
 from typing import Optional, Tuple
 from urllib.parse import quote
 
@@ -72,6 +73,7 @@ def self_checkin(
     address: Optional[str] = None,
     gender: Optional[str] = None,
     emergency_contact: Optional[str] = None,
+    appointment_date: Optional[date] = None,
 ) -> Tuple[Patient, object, bool]:
     """
     Look up patient by phone or register new; book doctor.
@@ -132,6 +134,7 @@ def self_checkin(
         patient_name=patient.name,
         patient_phone=digits,
         slot=slot,
+        appointment_date=appointment_date,
         appointment_type="follow_up" if not is_new else "new",
     )
     return patient, appt, is_new

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import delete, select
@@ -31,8 +31,20 @@ from app.models import (
     TrainJob,
 )
 from app.services.age_bands import age_to_band
+from app.services.availability import slot_scheduled_at, works_on_date
+from app.services.eta import record_duration_sample
+from app.services.reception_board import parse_work_days
 
 SEED_DIR = Path(__file__).resolve().parent.parent / "seed"
+
+PATIENT_POOL_SIZE = 1000
+PATIENTS_PER_HOSPITAL = 200
+CONSULTS_PER_DOCTOR = 100
+SCAN_BOOTSTRAP_SAMPLES = 100
+SEED_RANDOM = 42
+HISTORY_PREFIX = "HIST"
+HISTORY_DAYS_PAST = 30
+HISTORY_DAYS_FUTURE = 14
 
 HOSPITALS = [
     {"external_id": "HOSP-001", "name": "Quivora General Hospital",    "city": "Mumbai"},
@@ -147,31 +159,64 @@ def _random_phone(rng: random.Random) -> str:
     return f"+91 {prefix}{rng.randint(10000000, 99999999)}"
 
 
+def _random_age(rng: random.Random) -> int:
+    return rng.choice(
+        list(range(1, 6)) * 3
+        + list(range(6, 13)) * 2
+        + list(range(13, 18))
+        + list(range(18, 41)) * 3
+        + list(range(41, 61)) * 2
+        + list(range(61, 86))
+    )
+
+
+def _generate_patients_pool(rng: random.Random, count: int = PATIENT_POOL_SIZE) -> List[Dict[str, Any]]:
+    patients = []
+    for i in range(1, count + 1):
+        age = _random_age(rng)
+        patients.append({
+            "external_id": f"PAT-{i:04d}",
+            "name": f"{rng.choice(FIRST_NAMES)} {rng.choice(LAST_NAMES)}",
+            "age": age,
+            "age_band": age_to_band(age),
+            "phone": _random_phone(rng),
+            "gender": rng.choice(["female", "male", "other", "prefer_not_to_say"]),
+        })
+    return patients
+
+
+def _all_doctors_flat() -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for hospital_external_id, docs in HOSPITAL_DOCTORS.items():
+        for doc in docs:
+            rows.append({**doc, "hospital_external_id": hospital_external_id})
+    return rows
+
+
 def generate_seed_files(force: bool = False) -> Dict[str, Any]:
     SEED_DIR.mkdir(parents=True, exist_ok=True)
+    patients_path = SEED_DIR / "patients.json"
+    doctors_path = SEED_DIR / "doctors.json"
     training_path = SEED_DIR / "training_consults.json"
 
-    if force or not training_path.exists():
-        rng = random.Random(42)
-        patients_pool = []
-        for i in range(1, 1001):
-            age = rng.choice(
-                list(range(1, 6)) * 3 + list(range(6, 13)) * 2 + list(range(13, 18))
-                + list(range(18, 41)) * 3 + list(range(41, 61)) * 2 + list(range(61, 86))
-            )
-            patients_pool.append({
-                "external_id": f"PAT-{i:04d}",
-                "name": f"{rng.choice(FIRST_NAMES)} {rng.choice(LAST_NAMES)}",
-                "age": age,
-                "age_band": age_to_band(age),
-            })
+    if force or not patients_path.exists():
+        rng = random.Random(SEED_RANDOM)
+        patients_pool = _generate_patients_pool(rng)
+        patients_path.write_text(json.dumps(patients_pool, indent=2))
+    else:
+        patients_pool = json.loads(patients_path.read_text())
 
-        all_doctors = [d for docs in HOSPITAL_DOCTORS.values() for d in docs]
+    if force or not doctors_path.exists():
+        doctors_path.write_text(json.dumps(_all_doctors_flat(), indent=2))
+
+    if force or not training_path.exists():
+        rng = random.Random(SEED_RANDOM)
+        all_doctors = _all_doctors_flat()
         doctors_block = []
         p_idx = 0
         for doc in all_doctors:
             consults = []
-            for seq in range(1, 101):
+            for seq in range(1, CONSULTS_PER_DOCTOR + 1):
                 p = patients_pool[p_idx % len(patients_pool)]
                 p_idx += 1
                 duration = _synthetic_duration(p["age"], doc["pace"], rng)
@@ -195,11 +240,18 @@ def generate_seed_files(force: bool = False) -> Dict[str, Any]:
         training_path.write_text(json.dumps({
             "version": 1,
             "hospital": "multi",
-            "consults_per_doctor": 100,
+            "consults_per_doctor": CONSULTS_PER_DOCTOR,
+            "patient_pool_size": len(patients_pool),
             "doctors": doctors_block,
         }, indent=2))
 
-    return {"training": training_path}
+    return {
+        "patients": patients_path,
+        "doctors": doctors_path,
+        "training": training_path,
+        "patient_count": len(patients_pool),
+        "doctor_count": len(_all_doctors_flat()),
+    }
 
 
 def clear_bootstrap_samples(db: Session) -> None:
@@ -210,7 +262,8 @@ def clear_bootstrap_samples(db: Session) -> None:
 
 
 def seed_database(db: Session, reset: bool = True) -> Dict[str, Any]:
-    generate_seed_files(force=False)
+    meta = generate_seed_files(force=False)
+    patients_pool: List[Dict[str, Any]] = json.loads(meta["patients"].read_text())
 
     if reset:
         # Full wipe — used only by explicit "Re-seed data" admin action
@@ -230,12 +283,12 @@ def seed_database(db: Session, reset: bool = True) -> Dict[str, Any]:
         db.execute(delete(Hospital))
         db.commit()
 
-    rng = random.Random(42)
+    rng = random.Random(SEED_RANDOM)
     rng_scan = random.Random(99)
     total_doctors = 0
     total_patients = 0
 
-    for hosp_data in HOSPITALS:
+    for hosp_index, hosp_data in enumerate(HOSPITALS):
         hospital = db.execute(
             select(Hospital).where(Hospital.external_id == hosp_data["external_id"])
         ).scalar_one_or_none()
@@ -276,37 +329,38 @@ def seed_database(db: Session, reset: bool = True) -> Dict[str, Any]:
                 db.add(Department(hospital_id=hospital.id, name=dname))
         total_doctors += len(HOSPITAL_DOCTORS[hosp_data["external_id"]])
 
-        # 200 patients per hospital
-        for i in range(1, 201):
+        hospital_patients = patients_pool[
+            hosp_index * PATIENTS_PER_HOSPITAL : (hosp_index + 1) * PATIENTS_PER_HOSPITAL
+        ]
+        for i, p in enumerate(hospital_patients, start=1):
             ext = f"{hosp_data['external_id']}-PAT-{i:03d}"
-            gender = ["female", "male", "other", "prefer_not_to_say"][i % 4]
+            gender = p.get("gender") or ["female", "male", "other", "prefer_not_to_say"][i % 4]
             address = f"{i}, Health Avenue, {hosp_data['city']}"
             emergency_contact = f"+91 8{hospital.id % 10}{i:08d}"
             existing = db.execute(
                 select(Patient).where(Patient.hospital_id == hospital.id, Patient.external_id == ext)
             ).scalar_one_or_none()
             if not existing:
-                age = rng.choice(
-                    list(range(1, 6)) * 3 + list(range(6, 13)) * 2 + list(range(13, 18))
-                    + list(range(18, 41)) * 3 + list(range(41, 61)) * 2 + list(range(61, 86))
-                )
                 db.add(Patient(
                     hospital_id=hospital.id,
                     external_id=ext,
-                    name=f"{rng.choice(FIRST_NAMES)} {rng.choice(LAST_NAMES)}",
-                    age=age,
-                    age_band=age_to_band(age),
-                    phone=_random_phone(rng),
+                    name=p["name"],
+                    age=p["age"],
+                    age_band=p["age_band"],
+                    phone=p.get("phone") or _random_phone(rng),
                     address=address,
                     gender=gender,
                     emergency_contact=emergency_contact,
                 ))
             else:
-                # Backfill newly introduced registration fields without resetting queues.
+                existing.name = p["name"]
+                existing.age = p["age"]
+                existing.age_band = p["age_band"]
+                existing.phone = existing.phone or p.get("phone") or _random_phone(rng)
                 existing.address = existing.address or address
                 existing.gender = existing.gender or gender
                 existing.emergency_contact = existing.emergency_contact or emergency_contact
-        total_patients += 200
+        total_patients += len(hospital_patients)
         db.flush()
 
         # Scan machines + bootstrap samples
@@ -336,7 +390,7 @@ def seed_database(db: Session, reset: bool = True) -> Dict[str, Any]:
                 select(ScanDurationSample).where(ScanDurationSample.machine_id == machine.id)
             ).scalars().all()
             if not existing_samples:
-                for i in range(100):
+                for i in range(SCAN_BOOTSTRAP_SAMPLES):
                     p = patients_list[i % len(patients_list)]
                     jitter = rng_scan.randint(
                         -int(sm_tmpl["base_sec"] * 0.2),
@@ -355,6 +409,7 @@ def seed_database(db: Session, reset: bool = True) -> Dict[str, Any]:
         "hospital": f"{len(HOSPITALS)} hospitals",
         "doctors": total_doctors,
         "patients": total_patients,
+        "patient_pool": len(patients_pool),
         "message": "Seed complete",
     }
 
@@ -362,6 +417,409 @@ def seed_database(db: Session, reset: bool = True) -> Dict[str, Any]:
 def load_training_json() -> Dict[str, Any]:
     generate_seed_files(force=False)
     return json.loads((SEED_DIR / "training_consults.json").read_text())
+
+
+def _hospital_tz(hospital: Hospital) -> ZoneInfo:
+    try:
+        return ZoneInfo(getattr(hospital, "timezone", None) or "Asia/Kolkata")
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("Asia/Kolkata")
+
+
+def _doctor_pace(external_id: str) -> float:
+    for docs in HOSPITAL_DOCTORS.values():
+        for doc in docs:
+            if doc["external_id"] == external_id:
+                return float(doc.get("pace", 1.0))
+    return 1.0
+
+
+def _parse_doctor_slots(doctor: Doctor) -> List[str]:
+    raw = (doctor.slots or "morning").strip()
+    slots = [s.strip() for s in raw.split(",") if s.strip()]
+    return slots or ["morning"]
+
+
+def clear_random_history(db: Session) -> int:
+    """Remove seeded historical OPD/scan rows (HIST-* external ids)."""
+    appt_ids = list(
+        db.execute(
+            select(Appointment.id).where(Appointment.external_id.like(f"{HISTORY_PREFIX}-%"))
+        ).scalars()
+    )
+    if appt_ids:
+        db.execute(delete(Prediction).where(Prediction.appointment_id.in_(appt_ids)))
+        db.execute(delete(QueueEvent).where(QueueEvent.appointment_id.in_(appt_ids)))
+        db.execute(delete(Appointment).where(Appointment.id.in_(appt_ids)))
+
+    scan_ids = list(
+        db.execute(
+            select(ScanAppointment.id).where(
+                ScanAppointment.external_id.like(f"{HISTORY_PREFIX}-SCAN-%")
+            )
+        ).scalars()
+    )
+    if scan_ids:
+        db.execute(delete(ScanPrediction).where(ScanPrediction.scan_appointment_id.in_(scan_ids)))
+        db.execute(delete(ScanAppointment).where(ScanAppointment.id.in_(scan_ids)))
+
+    db.commit()
+    return len(appt_ids) + len(scan_ids)
+
+
+def seed_random_history(
+    db: Session,
+    *,
+    days_past: int = HISTORY_DAYS_PAST,
+    days_future: int = HISTORY_DAYS_FUTURE,
+    reset: bool = True,
+) -> Dict[str, Any]:
+    """
+    Fill appointments, events, predictions, duration samples, scan rows,
+    and doctor ops across random dates for every hospital.
+    """
+    if reset:
+        clear_random_history(db)
+    else:
+        existing = db.execute(
+            select(Appointment.id).where(Appointment.external_id.like(f"{HISTORY_PREFIX}-%")).limit(1)
+        ).scalar_one_or_none()
+        if existing:
+            return {"message": "Random history already loaded (use reset=True to replace)"}
+
+    rng = random.Random(SEED_RANDOM + 99)
+    now = datetime.now(timezone.utc)
+    totals = {
+        "appointments": 0,
+        "completed": 0,
+        "no_shows": 0,
+        "scheduled_future": 0,
+        "active_today": 0,
+        "events": 0,
+        "predictions": 0,
+        "duration_samples": 0,
+        "scans": 0,
+        "doctor_ops_events": 0,
+    }
+
+    hospitals = db.execute(select(Hospital).order_by(Hospital.id)).scalars().all()
+    for hospital in hospitals:
+        hospital_tz = _hospital_tz(hospital)
+        local_now = now.astimezone(hospital_tz)
+        today = local_now.date()
+
+        doctors = db.execute(
+            select(Doctor).where(Doctor.hospital_id == hospital.id).order_by(Doctor.id)
+        ).scalars().all()
+        patients = db.execute(
+            select(Patient).where(Patient.hospital_id == hospital.id).order_by(Patient.id)
+        ).scalars().all()
+        machines = db.execute(
+            select(ScanMachine).where(ScanMachine.hospital_id == hospital.id).order_by(ScanMachine.id)
+        ).scalars().all()
+        if not doctors or not patients:
+            continue
+
+        token_key: Dict[Tuple[int, str, date], int] = {}
+        patient_cursor = rng.randint(0, len(patients) - 1)
+
+        for day_offset in range(days_past, -days_future - 1, -1):
+            local_day = (local_now - timedelta(days=day_offset)).date()
+            if local_day.weekday() == 6:
+                continue
+
+            is_past = local_day < today
+            is_future = local_day > today
+            is_today = local_day == today
+
+            for doc_index, doctor in enumerate(doctors):
+                work_days = parse_work_days(getattr(doctor, "work_days", None))
+                if not works_on_date(work_days, local_day, hospital):
+                    continue
+
+                pace = _doctor_pace(doctor.external_id)
+                slots = _parse_doctor_slots(doctor)
+                daily_total = rng.randint(3, 9)
+                slot_counts = {s: 0 for s in slots}
+                for _ in range(daily_total):
+                    slot_counts[rng.choice(slots)] += 1
+
+                for slot, count in slot_counts.items():
+                    if count <= 0:
+                        continue
+                    base_scheduled = slot_scheduled_at(hospital, local_day, slot)
+
+                    for seq in range(1, count + 1):
+                        patient = patients[patient_cursor % len(patients)]
+                        patient_cursor += 1
+
+                        key = (doctor.id, slot, local_day)
+                        token_key[key] = token_key.get(key, 0) + 1
+                        token = token_key[key]
+
+                        roll = rng.random()
+                        if is_future:
+                            status = (
+                                AppointmentStatus.cancelled if roll < 0.08
+                                else AppointmentStatus.scheduled
+                            )
+                        elif is_past:
+                            status = (
+                                AppointmentStatus.no_show if roll < 0.12 else
+                                AppointmentStatus.cancelled if roll < 0.17 else
+                                AppointmentStatus.completed
+                            )
+                        else:
+                            status = (
+                                AppointmentStatus.in_progress if roll < 0.08 else
+                                AppointmentStatus.checked_in if roll < 0.28 else
+                                AppointmentStatus.completed if roll < 0.55 else
+                                AppointmentStatus.scheduled if roll < 0.92 else
+                                AppointmentStatus.no_show
+                            )
+
+                        priority_roll = rng.random()
+                        priority = (
+                            "emergency" if priority_roll < 0.04 else
+                            "urgent" if priority_roll < 0.10 else
+                            "senior" if patient.age >= 60 and priority_roll < 0.22 else
+                            "normal"
+                        )
+                        appt_type = (
+                            AppointmentType.follow_up if rng.random() < 0.35
+                            else AppointmentType.new
+                        )
+                        scheduled_at = base_scheduled + timedelta(minutes=(token - 1) * rng.randint(8, 18))
+                        created_at = scheduled_at - timedelta(hours=rng.randint(12, 48))
+
+                        appt = Appointment(
+                            hospital_id=hospital.id,
+                            external_id=(
+                                f"{HISTORY_PREFIX}-{hospital.external_id}-"
+                                f"{local_day.isoformat()}-{doctor.id}-{slot}-{seq}"
+                            ),
+                            doctor_id=doctor.id,
+                            patient_id=patient.id,
+                            token=token,
+                            appointment_type=appt_type,
+                            status=status,
+                            age=patient.age,
+                            age_band=patient.age_band,
+                            slot=slot,
+                            priority=priority,
+                            priority_reason=(
+                                "Seeded emergency case" if priority == "emergency" else
+                                "Seeded urgent triage" if priority == "urgent" else
+                                "Age-based senior priority" if priority == "senior" else None
+                            ),
+                            scheduled_at=scheduled_at,
+                            created_at=created_at,
+                        )
+                        db.add(appt)
+                        db.flush()
+                        totals["appointments"] += 1
+
+                        if status == AppointmentStatus.cancelled:
+                            continue
+
+                        if status == AppointmentStatus.no_show:
+                            no_show_at = scheduled_at + timedelta(minutes=rng.randint(15, 40))
+                            db.add(QueueEvent(
+                                appointment_id=appt.id,
+                                event_type="no_show",
+                                note="Patient did not arrive",
+                                timestamp=no_show_at,
+                            ))
+                            totals["no_shows"] += 1
+                            totals["events"] += 1
+                            continue
+
+                        if status in (
+                            AppointmentStatus.checked_in,
+                            AppointmentStatus.in_progress,
+                            AppointmentStatus.completed,
+                        ):
+                            check_in = scheduled_at + timedelta(minutes=rng.randint(-3, 12))
+                            db.add(QueueEvent(
+                                appointment_id=appt.id,
+                                event_type="checked_in",
+                                timestamp=check_in,
+                            ))
+                            totals["events"] += 1
+
+                            if priority != "normal":
+                                db.add(QueueEvent(
+                                    appointment_id=appt.id,
+                                    event_type="priority_set",
+                                    note=f"Initial triage: {priority}",
+                                    timestamp=check_in,
+                                ))
+                                totals["events"] += 1
+
+                        if status in (AppointmentStatus.in_progress, AppointmentStatus.completed):
+                            wait_min = rng.randint(3, 25) + int(doc_index * 1.5)
+                            started = check_in + timedelta(minutes=wait_min)
+                            consult_min = max(
+                                5,
+                                int((8 + patient.age / 20 + rng.randint(-2, 5)) * pace),
+                            )
+                            appt.started_at = started
+                            db.add(QueueEvent(
+                                appointment_id=appt.id,
+                                event_type="started",
+                                timestamp=started,
+                            ))
+                            totals["events"] += 1
+
+                            if status == AppointmentStatus.completed:
+                                ended = started + timedelta(minutes=consult_min)
+                                appt.ended_at = ended
+                                db.add(QueueEvent(
+                                    appointment_id=appt.id,
+                                    event_type="ended",
+                                    timestamp=ended,
+                                ))
+                                totals["events"] += 1
+                                totals["completed"] += 1
+                                record_duration_sample(
+                                    db,
+                                    doctor_id=doctor.id,
+                                    age_band=appt.age_band,
+                                    appointment_type=appt.appointment_type.value,
+                                    duration_sec=consult_min * 60,
+                                    hour_of_day=started.astimezone(hospital_tz).hour,
+                                    day_of_week=started.weekday(),
+                                    source="live",
+                                )
+                                totals["duration_samples"] += 1
+                            else:
+                                totals["active_today"] += 1
+
+                        if status in (
+                            AppointmentStatus.scheduled,
+                            AppointmentStatus.checked_in,
+                            AppointmentStatus.in_progress,
+                        ) and (is_today or is_future):
+                            wait_min = rng.randint(5, 45) + seq * 3
+                            db.add(Prediction(
+                                appointment_id=appt.id,
+                                eta_at=scheduled_at + timedelta(minutes=wait_min),
+                                confidence_min=round(rng.uniform(5.0, 12.0), 1),
+                                patients_ahead=max(0, seq - 1),
+                                wait_seconds=wait_min * 60,
+                                algorithm_version="history-seed",
+                                updated_at=now,
+                            ))
+                            totals["predictions"] += 1
+                            if is_future:
+                                totals["scheduled_future"] += 1
+
+        # Doctor ops sprinkled across the past window
+        for doctor in doctors:
+            for _ in range(rng.randint(2, 5)):
+                at = now - timedelta(
+                    days=rng.randint(1, days_past),
+                    hours=rng.randint(8, 17),
+                )
+                db.add(DoctorOpsEvent(
+                    doctor_id=doctor.id,
+                    event_type=rng.choice(["break_start", "running_late", "go_live"]),
+                    value_min=rng.choice([0, 10, 15, 20]),
+                    timestamp=at,
+                ))
+                totals["doctor_ops_events"] += 1
+
+        # Scan history per machine
+        scan_token: Dict[int, int] = {m.id: 0 for m in machines}
+        for machine in machines:
+            scan_type = getattr(machine.scan_type, "value", str(machine.scan_type))
+            base_min = {"mri": 32, "ct": 13, "xray": 6, "ultrasound": 19}.get(scan_type, 12)
+
+            for day_offset in range(days_past, -days_future - 1, -1):
+                local_day = (local_now - timedelta(days=day_offset)).date()
+                if local_day.weekday() == 6:
+                    continue
+                daily_scans = rng.randint(1, 5)
+                for seq in range(1, daily_scans + 1):
+                    patient = patients[patient_cursor % len(patients)]
+                    patient_cursor += 1
+                    scan_token[machine.id] += 1
+                    hour = 9 + min(9, seq * 2 + rng.randint(0, 2))
+                    scheduled = datetime(
+                        local_day.year, local_day.month, local_day.day,
+                        hour, rng.randint(0, 45), tzinfo=hospital_tz,
+                    ).astimezone(timezone.utc)
+
+                    is_past = local_day < today
+                    roll = rng.random()
+                    if is_past:
+                        status = (
+                            ScanStatus.no_show if roll < 0.1 else
+                            ScanStatus.completed
+                        )
+                    elif local_day > today:
+                        status = ScanStatus.scheduled
+                    else:
+                        status = (
+                            ScanStatus.in_progress if roll < 0.15 else
+                            ScanStatus.arrived if roll < 0.4 else
+                            ScanStatus.completed if roll < 0.7 else
+                            ScanStatus.scheduled
+                        )
+
+                    scan = ScanAppointment(
+                        external_id=(
+                            f"{HISTORY_PREFIX}-SCAN-{hospital.external_id}-"
+                            f"{local_day.isoformat()}-{machine.id}-{seq}"
+                        ),
+                        machine_id=machine.id,
+                        patient_id=patient.id,
+                        token=scan_token[machine.id],
+                        age=patient.age,
+                        age_band=patient.age_band,
+                        status=status,
+                        scheduled_at=scheduled,
+                        created_at=scheduled - timedelta(hours=rng.randint(6, 30)),
+                    )
+                    if status in (ScanStatus.in_progress, ScanStatus.completed):
+                        started = scheduled + timedelta(minutes=rng.randint(5, 25))
+                        duration = max(3, base_min + rng.randint(-3, 6))
+                        scan.started_at = started
+                        if status == ScanStatus.completed:
+                            scan.ended_at = started + timedelta(minutes=duration)
+                        db.add(ScanDurationSample(
+                            machine_id=machine.id,
+                            scan_type=scan_type,
+                            age_band=patient.age_band,
+                            duration_sec=duration * 60,
+                            source="live",
+                        ))
+                    db.add(scan)
+                    db.flush()
+                    totals["scans"] += 1
+
+                    if status in (ScanStatus.scheduled, ScanStatus.arrived, ScanStatus.in_progress):
+                        wait_min = rng.randint(8, 40)
+                        db.add(ScanPrediction(
+                            scan_appointment_id=scan.id,
+                            eta_at=now + timedelta(minutes=wait_min),
+                            confidence_min=7.0,
+                            patients_ahead=max(0, seq - 1),
+                            wait_seconds=wait_min * 60,
+                            predicted_duration_sec=base_min * 60,
+                            updated_at=now,
+                        ))
+                        totals["predictions"] += 1
+
+        db.commit()
+
+    return {
+        "days_past": days_past,
+        "days_future": days_future,
+        "hospitals": len(hospitals),
+        **totals,
+        "message": "Random consultation history seeded",
+    }
 
 
 def seed_insights_demo(db: Session, hospital: Hospital, days: int = 21) -> Dict[str, Any]:

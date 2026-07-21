@@ -342,3 +342,60 @@ def test_hospital_insights_endpoint(client: httpx.Client):
         )
         assert by_ext.status_code == 200
         assert by_ext.json()["range_days"] == 1
+
+
+def test_date_wise_availability_and_booking(client: httpx.Client):
+    from datetime import date, timedelta
+
+    hospitals = client.get("/v1/hospitals", headers=HEADERS).json()
+    hospital = hospitals[0]
+    doctors = client.get(f"/v1/doctors?hospital_id={hospital['id']}", headers=HEADERS).json()
+    doctor = doctors[0]
+
+    future = date.today() + timedelta(days=3)
+    while future.weekday() == 6:
+        future += timedelta(days=1)
+    future_iso = future.isoformat()
+
+    availability = client.get(
+        f"/v1/doctors/{doctor['external_id']}/availability?date={future_iso}",
+        headers=HEADERS,
+    )
+    assert availability.status_code == 200, availability.text
+    body = availability.json()
+    assert body["date"] == future_iso
+    assert body["works_that_day"] is True
+    assert len(body["slots"]) >= 1
+    slot = body["slots"][0]["slot"]
+
+    booked = client.post(
+        "/v1/appointments",
+        headers=HEADERS,
+        json={
+            "doctor_external_id": doctor["external_id"],
+            "patient_name": "Future Booking",
+            "age": 42,
+            "appointment_type": "new",
+            "slot": slot,
+            "appointment_date": future_iso,
+        },
+    )
+    assert booked.status_code == 200, booked.text
+    appt = booked.json()
+    assert appt["scheduled_at"] is not None
+    assert appt["token"] == 1
+
+    availability_after = client.get(
+        f"/v1/doctors/{doctor['external_id']}/availability?date={future_iso}",
+        headers=HEADERS,
+    ).json()
+    slot_after = next(s for s in availability_after["slots"] if s["slot"] == slot)
+    assert slot_after["booked_count"] >= 1
+
+    hospital_availability = client.get(
+        f"/v1/hospitals/{hospital['id']}/availability?date={future_iso}",
+        headers=HEADERS,
+    )
+    assert hospital_availability.status_code == 200
+    assert any(d["doctor_external_id"] == doctor["external_id"] for d in hospital_availability.json()["doctors"])
+

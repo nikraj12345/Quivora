@@ -36,7 +36,7 @@ def works_today(work_days: list[str], now: datetime | None = None) -> bool:
 
 def build_reception_board(db: Session, hospital_id: int, hospital_name: str) -> ReceptionBoardOut:
     from app.models import Hospital
-    from app.services.queue import session_day_bounds_utc
+    from app.services.time_utils import session_day_bounds_utc
 
     now = datetime.now(timezone.utc)
     active_statuses = [

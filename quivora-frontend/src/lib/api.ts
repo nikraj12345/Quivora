@@ -159,8 +159,57 @@ export type Appointment = {
   slot?: string;
   priority?: string;
   priority_reason?: string | null;
+  scheduled_at?: string | null;
   started_at?: string | null;
   ended_at?: string | null;
+};
+
+export type SlotAvailability = {
+  slot: string;
+  available: boolean;
+  booked_count: number;
+  reason?: string | null;
+};
+
+export type DoctorAvailability = {
+  date: string;
+  doctor_id: number;
+  doctor_external_id: string;
+  doctor_name: string;
+  department: string;
+  works_that_day: boolean;
+  is_available: boolean;
+  slots: SlotAvailability[];
+};
+
+export type SlotScheduleSummary = {
+  slot: string;
+  total_count: number;
+  active_count: number;
+  completed_count: number;
+  no_show_count: number;
+  cancelled_count: number;
+  estimated_capacity: number;
+  occupancy_pct: number;
+};
+
+export type DoctorDaySchedule = {
+  date: string;
+  doctor_id: number;
+  doctor_external_id: string;
+  doctor_name: string;
+  works_that_day: boolean;
+  slots: SlotScheduleSummary[];
+  appointments: Appointment[];
+  total_appointments: number;
+  overall_occupancy_pct: number;
+};
+
+export type HospitalAvailability = {
+  date: string;
+  hospital_id: number;
+  hospital_name: string;
+  doctors: DoctorAvailability[];
 };
 
 export type Eta = {
@@ -408,9 +457,22 @@ export const api = {
     age: number;
     appointment_type?: string;
     slot?: string;
+    appointment_date?: string;
     priority?: string;
     priority_reason?: string;
   }) => request<Appointment>("/v1/appointments", { method: "POST", body: JSON.stringify(body) }),
+  doctorAvailability: (ref: string | number, date?: string) =>
+    request<DoctorAvailability>(
+      `/v1/doctors/${ref}/availability${date ? `?date=${encodeURIComponent(date)}` : ""}`
+    ),
+  doctorSchedule: (ref: string | number, date?: string) =>
+    request<DoctorDaySchedule>(
+      `/v1/doctors/${ref}/schedule${date ? `?date=${encodeURIComponent(date)}` : ""}`
+    ),
+  hospitalAvailability: (ref: string | number, date?: string) =>
+    request<HospitalAvailability>(
+      `/v1/hospitals/${ref}/availability${date ? `?date=${encodeURIComponent(date)}` : ""}`
+    ),
   hospitalQr: (ref: string | number) =>
     request<{
       hospital_id: number;
@@ -457,8 +519,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ appointment_id, event_type }),
     }),
-  queue: (ref: string | number, slot?: string) =>
-    request<QueueItem[]>(`/v1/doctors/${ref}/queue${slot ? `?slot=${encodeURIComponent(slot)}` : ""}`),
+  queue: (ref: string | number, slot?: string, date?: string) =>
+    request<QueueItem[]>(
+      `/v1/doctors/${ref}/queue${
+        slot || date
+          ? `?${[
+              slot ? `slot=${encodeURIComponent(slot)}` : "",
+              date ? `date=${encodeURIComponent(date)}` : "",
+            ]
+              .filter(Boolean)
+              .join("&")}`
+          : ""
+      }`
+    ),
   eta: (appointmentId: number) => request<Eta>(`/v1/appointments/${appointmentId}/eta`),
   appointment: (id: number) => request<Appointment>(`/v1/appointments/${id}`),
   // Scan queue

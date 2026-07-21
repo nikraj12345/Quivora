@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -111,6 +111,7 @@ class AppointmentCreate(BaseModel):
     priority: Optional[str] = None  # emergency | senior | urgent | normal
     priority_reason: Optional[str] = None
     scheduled_at: Optional[datetime] = None
+    appointment_date: Optional[date] = None
 
 
 class AppointmentOut(BaseModel):
@@ -128,6 +129,7 @@ class AppointmentOut(BaseModel):
     slot: str = "morning"
     priority: str = "normal"
     priority_reason: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
 
@@ -144,6 +146,7 @@ class SelfCheckinBody(BaseModel):
     address: Optional[str] = None
     gender: Optional[str] = None
     emergency_contact: Optional[str] = None
+    appointment_date: Optional[date] = None
 
 
 class SelfCheckinOut(BaseModel):
@@ -164,7 +167,7 @@ class HospitalQrInfoOut(BaseModel):
 
 class EventCreate(BaseModel):
     appointment_id: int
-    event_type: str  # checked_in | started | ended | no_show | emergency_insert
+    event_type: str  # checked_in | started | ended | ended_and_next | ended_and_break | no_show | emergency_insert
     note: Optional[str] = None
 
 
@@ -226,6 +229,54 @@ class ReceptionBoardOut(BaseModel):
     generated_at: datetime
     summary: Dict[str, int]
     doctors: List[ReceptionDoctorRow]
+
+
+class SlotAvailabilityOut(BaseModel):
+    slot: str
+    available: bool
+    booked_count: int
+    reason: Optional[str] = None
+
+
+class DoctorAvailabilityOut(BaseModel):
+    date: str
+    doctor_id: int
+    doctor_external_id: str
+    doctor_name: str
+    department: str
+    works_that_day: bool
+    is_available: bool
+    slots: List[SlotAvailabilityOut]
+
+
+class HospitalAvailabilityOut(BaseModel):
+    date: str
+    hospital_id: int
+    hospital_name: str
+    doctors: List[DoctorAvailabilityOut]
+
+
+class SlotScheduleSummaryOut(BaseModel):
+    slot: str
+    total_count: int
+    active_count: int
+    completed_count: int
+    no_show_count: int
+    cancelled_count: int
+    estimated_capacity: int
+    occupancy_pct: int
+
+
+class DoctorDayScheduleOut(BaseModel):
+    date: str
+    doctor_id: int
+    doctor_external_id: str
+    doctor_name: str
+    works_that_day: bool
+    slots: List[SlotScheduleSummaryOut]
+    appointments: List[AppointmentOut]
+    total_appointments: int
+    overall_occupancy_pct: int
 
 
 class InsightsOut(BaseModel):

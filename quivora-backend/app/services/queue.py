@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -16,6 +15,7 @@ from app.models import (
     AppointmentStatus,
     AppointmentType,
     Doctor,
+    DoctorOpsEvent,
     EventType,
     Hospital,
     Patient,
@@ -24,7 +24,16 @@ from app.models import (
 )
 from app.config import settings
 from app.services.age_bands import age_to_band
+from app.services.availability import (
+    day_anchor_utc,
+    parse_appointment_date,
+    slot_scheduled_at,
+    validate_appointment_date,
+    works_on_date,
+    local_today,
+)
 from app.services.eta import recompute_doctor_queue_etas, record_duration_sample
+from app.services.reception_board import parse_work_days
 from app.services import sms
 from app.services import telegram_bot as tg
 
@@ -41,26 +50,7 @@ def _test_chat_id() -> Optional[str]:
     return v if v else None
 
 
-def hospital_zone(hospital: Optional[Hospital]) -> ZoneInfo:
-    name = (getattr(hospital, "timezone", None) or "Asia/Kolkata").strip() or "Asia/Kolkata"
-    try:
-        return ZoneInfo(name)
-    except ZoneInfoNotFoundError:
-        return ZoneInfo("Asia/Kolkata")
-
-
-def session_day_bounds_utc(
-    hospital: Optional[Hospital],
-    when: Optional[datetime] = None,
-) -> tuple[datetime, datetime]:
-    """Return [day_start, day_end) in UTC for the hospital's local calendar day."""
-    tz = hospital_zone(hospital)
-    now = (when or datetime.now(timezone.utc)).astimezone(tz)
-    start_local = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_local = start_local + timedelta(days=1)
-    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
-
-
+from app.services.time_utils import hospital_zone, session_day_bounds_utc
 def _appt_anchor(appt: Appointment) -> Optional[datetime]:
     t = appt.scheduled_at or appt.created_at
     if t is None:
@@ -224,6 +214,7 @@ def create_appointment(
     appointment_type: str = "new",
     slot: Optional[str] = None,
     scheduled_at: Optional[datetime] = None,
+    appointment_date: Optional[date] = None,
     priority: Optional[str] = None,
     priority_reason: Optional[str] = None,
 ) -> Appointment:
@@ -239,6 +230,18 @@ def create_appointment(
     slot_val = resolve_slot(doctor, slot)
     priority_val = resolve_priority(age, priority)
     reason = (priority_reason or "").strip() or None
+
+    target_date = parse_appointment_date(appointment_date, hospital)
+    validate_appointment_date(target_date, hospital)
+    work_days = parse_work_days(getattr(doctor, "work_days", None))
+    if not works_on_date(work_days, target_date, hospital):
+        raise ValueError("Doctor does not work on the selected date")
+    if target_date == local_today(hospital) and not doctor.is_available:
+        raise ValueError("Doctor is not available for booking today")
+
+    if scheduled_at is None:
+        scheduled_at = slot_scheduled_at(hospital, target_date, slot_val)
+    is_today = target_date == local_today(hospital)
     if priority_val != "normal" and not reason:
         if priority_val == "senior" and age >= 60:
             reason = "Age 60+ — senior priority"
@@ -294,7 +297,9 @@ def create_appointment(
     # Tokens restart from 1 after each session clear (queue_epoch_at)
     if token is None:
         epoch = ensure_queue_epoch(db, doctor)
-        day_start, day_end = session_day_bounds_utc(hospital)
+        from app.services.availability import day_anchor_utc
+
+        day_start, day_end = session_day_bounds_utc(hospital, day_anchor_utc(target_date, hospital))
         token_start = max(epoch, day_start)
         max_token = db.execute(
             select(func.max(Appointment.token)).where(
@@ -328,7 +333,7 @@ def create_appointment(
         slot=slot_val,
         priority=priority_val,
         priority_reason=reason,
-        scheduled_at=scheduled_at or datetime.now(timezone.utc),
+        scheduled_at=scheduled_at,
         telegram_chat_id=auto_chat,
     )
     db.add(appt)
@@ -346,8 +351,27 @@ def create_appointment(
 
     db.commit()
     db.refresh(appt)
-    recompute_doctor_queue_etas(db, doctor.id)
-    db.refresh(appt)
+    if is_today:
+        recompute_doctor_queue_etas(db, doctor.id)
+        db.refresh(appt)
+
+    if not is_today:
+        slot_label = SLOT_LABELS.get(slot_val, slot_val.capitalize())
+        service = f"{doctor.name} · {slot_label} · {target_date.isoformat()}"
+        sms_phone = format_phone_display(phone_digits) if phone_digits else sms.phone_from_patient(patient)
+        sms.notify_booked(
+            sms_phone,
+            patient.name,
+            appt.token,
+            0,
+            service,
+            current_token=None,
+            wait_seconds=None,
+            eta_time=None,
+            doctor_live=False,
+            sync=True,
+        )
+        return appt
 
     waiting = db.execute(
         select(Appointment).where(
@@ -396,7 +420,140 @@ def create_appointment(
     return appt
 
 
+END_WITH_NEXT_EVENTS = frozenset({"ended", "ended_and_next"})
+END_WITH_BREAK_EVENT = "ended_and_break"
+
+
+def _service_label(appt: Appointment) -> str:
+    doctor_name = appt.doctor.name if appt.doctor else "Doctor"
+    slot = appt.slot or "morning"
+    return f"{doctor_name} · {SLOT_LABELS.get(slot, slot.capitalize())}"
+
+
+def _end_consult(db: Session, appt: Appointment, now: datetime) -> None:
+    db.add(QueueEvent(appointment_id=appt.id, event_type=EventType.ended.value, timestamp=now))
+    appt.status = AppointmentStatus.completed
+    appt.ended_at = now
+    if appt.started_at:
+        started = appt.started_at
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        duration = int((now - started).total_seconds())
+    else:
+        duration = 10 * 60
+    record_duration_sample(
+        db,
+        doctor_id=appt.doctor_id,
+        age_band=appt.age_band,
+        appointment_type=appt.appointment_type.value,
+        duration_sec=duration,
+        hour_of_day=now.hour,
+        day_of_week=now.weekday(),
+        source="live",
+    )
+    chat_id = appt.telegram_chat_id
+    phone = sms.phone_from_patient(appt.patient)
+    patient_name = appt.patient.name if appt.patient else "Patient"
+    service = _service_label(appt)
+    if chat_id:
+        tg.notify_ended(chat_id, patient_name, service)
+    sms.notify_ended(phone, patient_name, service)
+
+
+def _start_consult(db: Session, appt: Appointment, now: datetime) -> None:
+    db.add(QueueEvent(appointment_id=appt.id, event_type=EventType.started.value, timestamp=now))
+    appt.status = AppointmentStatus.in_progress
+    appt.started_at = now
+    chat_id = appt.telegram_chat_id
+    phone = sms.phone_from_patient(appt.patient)
+    patient_name = appt.patient.name if appt.patient else "Patient"
+    service = _service_label(appt)
+    if chat_id:
+        tg.notify_started(chat_id, patient_name, appt.token, service)
+    sms.notify_started(phone, patient_name, appt.token, service)
+
+
+def find_next_waiting_in_slot(db: Session, doctor: Doctor, slot: str) -> Optional[Appointment]:
+    hospital = db.get(Hospital, doctor.hospital_id)
+    day_start, day_end = session_day_bounds_utc(hospital)
+    waiting = db.execute(
+        select(Appointment).where(
+            Appointment.doctor_id == doctor.id,
+            Appointment.slot == slot,
+            Appointment.status.in_(
+                [AppointmentStatus.scheduled, AppointmentStatus.checked_in]
+            ),
+            Appointment.scheduled_at >= day_start,
+            Appointment.scheduled_at < day_end,
+        )
+    ).scalars().all()
+    if not waiting:
+        return None
+    return sorted(waiting, key=queue_sort_key)[0]
+
+
+def start_doctor_break(db: Session, doctor: Doctor, now: datetime) -> None:
+    if not doctor.is_live:
+        raise ValueError("Doctor must be live to start a break")
+    if doctor.is_on_break:
+        raise ValueError("Already on break")
+    doctor.is_on_break = True
+    doctor.break_started_at = now
+    db.add(DoctorOpsEvent(doctor_id=doctor.id, event_type="break_start", timestamp=now))
+    slot = doctor.active_slot or _parse_slots(doctor)[0]
+    hospital = db.get(Hospital, doctor.hospital_id)
+    day_start, day_end = session_day_bounds_utc(hospital)
+    waiting = db.execute(
+        select(Appointment).where(
+            Appointment.doctor_id == doctor.id,
+            Appointment.slot == slot,
+            Appointment.status.in_(
+                [AppointmentStatus.scheduled, AppointmentStatus.checked_in]
+            ),
+            Appointment.scheduled_at >= day_start,
+            Appointment.scheduled_at < day_end,
+        ).order_by(Appointment.token.asc())
+    ).scalars().all()
+    for appt in waiting:
+        if not appt.patient:
+            continue
+        if appt.telegram_chat_id:
+            tg.notify_break_started(appt.telegram_chat_id, appt.patient.name, appt.token, doctor.name)
+        sms.notify_break_started(sms.phone_from_patient(appt.patient), appt.patient.name, appt.token, doctor.name)
+
+
+def apply_end_consult_flow(db: Session, appointment_id: int, event_type: str) -> Appointment:
+    appt = db.get(Appointment, appointment_id)
+    if not appt:
+        raise ValueError("Appointment not found")
+    if appt.status != AppointmentStatus.in_progress:
+        raise ValueError("Only an in-progress consult can be ended")
+
+    doctor = appt.doctor or db.get(Doctor, appt.doctor_id)
+    if not doctor:
+        raise ValueError("Doctor not found")
+
+    now = datetime.now(timezone.utc)
+    slot = appt.slot or doctor.active_slot or _parse_slots(doctor)[0]
+    _end_consult(db, appt, now)
+
+    if event_type == END_WITH_BREAK_EVENT:
+        start_doctor_break(db, doctor, now)
+    elif event_type in END_WITH_NEXT_EVENTS:
+        nxt = find_next_waiting_in_slot(db, doctor, slot)
+        if nxt:
+            _start_consult(db, nxt, now)
+
+    db.commit()
+    recompute_doctor_queue_etas(db, appt.doctor_id)
+    db.refresh(appt)
+    return appt
+
+
 def apply_event(db: Session, appointment_id: int, event_type: str) -> Appointment:
+    if event_type in END_WITH_NEXT_EVENTS or event_type == END_WITH_BREAK_EVENT:
+        return apply_end_consult_flow(db, appointment_id, event_type)
+
     appt = db.get(Appointment, appointment_id)
     if not appt:
         raise ValueError("Appointment not found")
@@ -423,29 +580,6 @@ def apply_event(db: Session, appointment_id: int, event_type: str) -> Appointmen
         if chat_id:
             tg.notify_started(chat_id, patient_name, appt.token, service)
         sms.notify_started(phone, patient_name, appt.token, service)
-    elif et == EventType.ended:
-        appt.status = AppointmentStatus.completed
-        appt.ended_at = now
-        if appt.started_at:
-            started = appt.started_at
-            if started.tzinfo is None:
-                started = started.replace(tzinfo=timezone.utc)
-            duration = int((now - started).total_seconds())
-        else:
-            duration = 10 * 60
-        record_duration_sample(
-            db,
-            doctor_id=appt.doctor_id,
-            age_band=appt.age_band,
-            appointment_type=appt.appointment_type.value,
-            duration_sec=duration,
-            hour_of_day=now.hour,
-            day_of_week=now.weekday(),
-            source="live",
-        )
-        if chat_id:
-            tg.notify_ended(chat_id, patient_name, service)
-        sms.notify_ended(phone, patient_name, service)
     elif et == EventType.no_show:
         appt.status = AppointmentStatus.no_show
         if chat_id:

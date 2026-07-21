@@ -54,6 +54,37 @@ export QUIVORA_API_BASE=http://127.0.0.1:8100
 pytest tests/e2e -v
 ```
 
+## Seed demo data
+
+Generates **1000 random patients**, **40 doctors** (8 per hospital × 5 hospitals), and **4000 training consults** (100 per doctor), then loads them into Postgres.
+
+```bash
+cd quivora-backend
+source .venv/bin/activate
+export PYTHONPATH=.
+export QUIVORA_DATABASE_URL=postgresql+psycopg2://quivora:quivora@localhost:5434/quivora
+
+# Full reset + load (recommended)
+./scripts/seed_all.sh
+
+# Regenerate JSON only (app/seed/*.json)
+python scripts/generate_seed.py
+
+# Also add random walk-in queue patients per doctor slot / scan machine
+./scripts/seed_all.sh --queues
+
+# History only (after base seed, without wiping hospitals/patients)
+./scripts/seed_all.sh --no-reset --history
+```
+
+By default, `seed_all` also creates **random consultations** across the past 30 days and next 14 days, filling `appointments`, `events`, `predictions`, `duration_samples`, `scan_appointments`, `scan_predictions`, and `doctor_ops_events`.
+
+Or via API (with backend running):
+
+```bash
+curl -X POST -H "X-API-Key: quivora-dev-key" "http://127.0.0.1:8100/v1/admin/seed?reset=true"
+```
+
 Training in e2e uses `?fast=true` (~seconds). UI demo uses paced ~2 minutes.
 
 ## API highlights

@@ -173,7 +173,8 @@ def recompute_doctor_queue_etas(db: Session, doctor_id: int) -> None:
             if appt.status != AppointmentStatus.in_progress:
                 eta_wait += break_extra + delay_extra
 
-            eta_at = (now + timedelta(seconds=eta_wait)) if slot_live else None
+            # Projected ETA from queue position even when session not live yet
+            eta_at = now + timedelta(seconds=max(0, int(eta_wait)))
             pred_row = db.execute(
                 select(Prediction).where(Prediction.appointment_id == appt.id)
             ).scalar_one_or_none()

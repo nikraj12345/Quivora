@@ -4,32 +4,168 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { Shell } from "@/components/Shell";
-import { api, Doctor, Hospital, PatientRecord, ScanMachine } from "@/lib/api";
+import { api, Doctor, DoctorAvailability, Eta, Hospital, PatientRecord, ScanEta, ScanMachine } from "@/lib/api";
 import { formatSlotsList, slotLabel, slotShort, slotTime } from "@/lib/slots";
 import { PRIORITY_META, Priority, suggestPriority } from "@/lib/priority";
 
-type Step = "hospital" | "patient" | "service" | "confirm";
+type Step = "hospital" | "patient" | "service" | "payment" | "confirm";
+type PaymentMethod = "upi" | "cash";
+type PaymentStatus = "paid" | "pending" | "skipped";
 
-const STEPS: { key: Step; label: string }[] = [
+const BASE_STEPS: { key: Step; label: string }[] = [
   { key: "hospital", label: "Hospital" },
-  { key: "patient",  label: "Patient" },
-  { key: "service",  label: "Service" },
-  { key: "confirm",  label: "Token" },
+  { key: "patient", label: "Patient" },
+  { key: "service", label: "Service" },
+  { key: "payment", label: "Payment" },
+  { key: "confirm", label: "Token" },
 ];
+
+const SCAN_FEES: Record<string, number> = {
+  mri: 3500,
+  ct: 2500,
+  xray: 800,
+  ultrasound: 1200,
+  blood_test: 500,
+};
 
 const SCAN_LABELS: Record<string, string> = {
   mri: "MRI", ct: "CT Scan", xray: "X-Ray", ultrasound: "Ultrasound", blood_test: "Blood Test",
 };
 
+function consultationFee(
+  serviceType: "doctor" | "scan",
+  visitType: "new" | "follow_up",
+  scanType?: string,
+) {
+  if (serviceType === "scan") return SCAN_FEES[scanType || ""] ?? 1000;
+  return visitType === "follow_up" ? 300 : 500;
+}
+
+function formatInr(amount: number) {
+  return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(amount);
+}
+
+function mockPaymentRef(apptId: number) {
+  return `QIV${String(apptId).padStart(6, "0")}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+}
+
+function needsPaymentStep(serviceType: "doctor" | "scan", appointmentDate: string) {
+  return serviceType === "scan" || appointmentDate === localDateString();
+}
+
 function digitsOnly(phone: string) {
   return phone.replace(/\D/g, "").slice(-10);
 }
 
-function StepBar({ current }: { current: Step }) {
-  const idx = STEPS.findIndex((s) => s.key === current);
+function localDateString(offsetDays = 0) {
+  const d = new Date();
+  d.setDate(d.getDate() + offsetDays);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatAppointmentDate(value: string) {
+  return new Date(`${value}T12:00:00`).toLocaleDateString([], {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function fmtEtaTime(iso: string | null | undefined) {
+  if (!iso) return null;
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function fmtWaitMins(sec: number) {
+  const m = Math.round(sec / 60);
+  if (m < 1) return "< 1 min";
+  return `~${m} min`;
+}
+
+function estWaitFromQueue(queueLen: number, avgSec?: number | null) {
+  const per = avgSec ? Math.max(5, Math.round(avgSec / 60)) : 12;
+  return queueLen * per;
+}
+
+const SLOT_START_HOUR: Record<string, number> = {
+  morning: 9,
+  afternoon: 13,
+  evening: 17,
+};
+
+function estExpectedByDate(
+  ahead: number,
+  avgSec?: number | null,
+  slot?: string,
+  appointmentDate?: string,
+): Date {
+  const waitMin = estWaitFromQueue(ahead, avgSec);
+  const slotKey = slot || "morning";
+  const now = new Date();
+
+  if (appointmentDate && appointmentDate !== localDateString()) {
+    const [y, m, d] = appointmentDate.split("-").map(Number);
+    const hour = SLOT_START_HOUR[slotKey] ?? 9;
+    const slotStart = new Date(y, m - 1, d, hour, 0, 0, 0);
+    return new Date(slotStart.getTime() + waitMin * 60 * 1000);
+  }
+
+  const slotStart = new Date(now);
+  slotStart.setHours(SLOT_START_HOUR[slotKey] ?? 9, 0, 0, 0);
+  const base = slotStart > now ? slotStart : now;
+  return new Date(base.getTime() + waitMin * 60 * 1000);
+}
+
+function resolvedWaitLabel(
+  ahead: number,
+  waitSeconds: number,
+  avgSec?: number | null,
+) {
+  if (waitSeconds > 0) return fmtWaitMins(waitSeconds);
+  if (ahead > 0) return `~${estWaitFromQueue(ahead, avgSec)} min`;
+  return "< 1 min";
+}
+
+function resolvedExpectedByLabel(
+  ahead: number,
+  waitSeconds: number,
+  etaAt: string | null | undefined,
+  avgSec?: number | null,
+  slot?: string,
+  appointmentDate?: string,
+) {
+  if (etaAt) return fmtEtaTime(etaAt);
+  if (ahead <= 0 && waitSeconds <= 0) return fmtEtaTime(new Date().toISOString());
+  if (waitSeconds > 0) {
+    return fmtEtaTime(new Date(Date.now() + waitSeconds * 1000).toISOString());
+  }
+  return fmtEtaTime(estExpectedByDate(ahead, avgSec, slot, appointmentDate).toISOString());
+}
+
+function MockPaymentQr({ seed }: { seed: string }) {
+  const cells = Array.from({ length: 121 }, (_, i) => {
+    const n = seed.charCodeAt(i % seed.length) + i * 17;
+    return n % 3 !== 0;
+  });
+  return (
+    <div className="payment-qr" aria-hidden>
+      {cells.map((on, i) => (
+        <span key={i} className={on ? "payment-qr-on" : ""} />
+      ))}
+    </div>
+  );
+}
+
+function StepBar({ current, includePayment }: { current: Step; includePayment: boolean }) {
+  const steps = includePayment ? BASE_STEPS : BASE_STEPS.filter((s) => s.key !== "payment");
+  const idx = steps.findIndex((s) => s.key === current);
   return (
     <div className="step-bar">
-      {STEPS.map((s, i) => (
+      {steps.map((s, i) => (
         <div key={s.key} className="step-item">
           {i > 0 && <div className="step-divider" />}
           <div className={`step-circle ${i < idx ? "done" : i === idx ? "active" : "pending"}`}>
@@ -70,12 +206,21 @@ function RegisterPageContent() {
   const [selDoctor, setSelDoctor]       = useState<Doctor | null>(null);
   const [selMachine, setSelMachine]     = useState<ScanMachine | null>(null);
   const [selSlot, setSelSlot]           = useState<string>("");
+  const [appointmentDate, setAppointmentDate] = useState(localDateString);
+  const [availability, setAvailability] = useState<DoctorAvailability | null>(null);
+  const [availabilityLoading, setAvailabilityLoading] = useState(false);
 
   const [token, setToken]           = useState<number | null>(null);
   const [apptId, setApptId]         = useState<number | null>(null);
+  const [issuedEta, setIssuedEta]   = useState<Eta | ScanEta | null>(null);
+  const [queuePreview, setQueuePreview] = useState<{ ahead: number; live: boolean } | null>(null);
   const [isScan, setIsScan]         = useState(false);
   const [loading, setLoading]       = useState(false);
   const [error, setError]           = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("upi");
+  const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>("skipped");
+  const [paymentRef, setPaymentRef] = useState("");
+  const [feeAmount, setFeeAmount] = useState(0);
 
   useEffect(() => {
     api.hospitals().then(setHospitals);
@@ -110,6 +255,58 @@ function RegisterPageContent() {
   useEffect(() => {
     setPriority((prev) => suggestPriority(patientAge, prev === "emergency" || prev === "urgent" ? prev : undefined));
   }, [patientAge]);
+
+  useEffect(() => {
+    if (!selDoctor || serviceType !== "doctor") {
+      setAvailability(null);
+      return;
+    }
+    let cancelled = false;
+    setAvailabilityLoading(true);
+    api.doctorAvailability(selDoctor.external_id, appointmentDate)
+      .then((data) => {
+        if (cancelled) return;
+        setAvailability(data);
+        const firstOpen = data.slots.find((slot) => slot.available);
+        setSelSlot((prev) => {
+          if (prev && data.slots.some((slot) => slot.slot === prev && slot.available)) return prev;
+          return firstOpen?.slot || data.slots[0]?.slot || selDoctor.slots?.[0] || "morning";
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setAvailability(null);
+      })
+      .finally(() => {
+        if (!cancelled) setAvailabilityLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [selDoctor, appointmentDate, serviceType]);
+
+  useEffect(() => {
+    if (!selDoctor || serviceType !== "doctor" || !selSlot) {
+      setQueuePreview(null);
+      return;
+    }
+    const booked = availability?.slots.find((s) => s.slot === selSlot)?.booked_count ?? 0;
+    const isToday = appointmentDate === localDateString();
+    const slotLive = selDoctor.is_live && selDoctor.active_slot === selSlot;
+
+    if (!isToday) {
+      setQueuePreview({ ahead: booked, live: false });
+      return;
+    }
+
+    let cancelled = false;
+    api.queue(selDoctor.external_id, selSlot, appointmentDate)
+      .then((q) => {
+        if (cancelled) return;
+        setQueuePreview({ ahead: q.length, live: slotLive });
+      })
+      .catch(() => {
+        if (!cancelled) setQueuePreview({ ahead: booked, live: slotLive });
+      });
+    return () => { cancelled = true; };
+  }, [selDoctor, selSlot, appointmentDate, serviceType, availability]);
 
   const resetPhoneState = () => {
     setPhoneChecked(false);
@@ -163,6 +360,13 @@ function RegisterPageContent() {
       const name = patientName.trim();
       const age = patientAge;
       const mobile = digitsOnly(phone);
+      const fee = consultationFee(
+        serviceType,
+        visitType,
+        selMachine?.scan_type,
+      );
+      setFeeAmount(fee);
+
       if (serviceType === "doctor" && selDoctor) {
         const effective = suggestPriority(age, priority);
         if (effective !== "normal" && !priorityReason.trim() && !(effective === "senior" && age >= 60)) {
@@ -177,19 +381,45 @@ function RegisterPageContent() {
           age,
           appointment_type: visitType,
           slot: selSlot || selDoctor.slots?.[0] || "morning",
+          appointment_date: appointmentDate,
           priority: effective,
           priority_reason: priorityReason.trim() || (effective === "senior" ? "Age 60+ — senior priority" : undefined),
         });
         setToken(a.token); setApptId(a.id); setIsScan(false);
         setIssuedPriority((a.priority as Priority) || effective);
+        setPaymentRef(mockPaymentRef(a.id));
+        try {
+          setIssuedEta(await api.eta(a.id));
+        } catch {
+          setIssuedEta(null);
+        }
+        if (needsPaymentStep("doctor", appointmentDate)) {
+          setPaymentStatus("pending");
+          setStep("payment");
+        } else {
+          setPaymentStatus("skipped");
+          setStep("confirm");
+        }
       } else if (serviceType === "scan" && selMachine) {
         const a = await api.createScanAppointment({ machine_external_id: selMachine.external_id, patient_name: name, age });
         setToken(a.token); setApptId(a.id); setIsScan(true);
         setIssuedPriority("normal");
+        setPaymentRef(mockPaymentRef(a.id));
+        try {
+          setIssuedEta(await api.scanEta(a.id));
+        } catch {
+          setIssuedEta(null);
+        }
+        setPaymentStatus("pending");
+        setStep("payment");
       }
-      setStep("confirm");
     } catch (e) { setError(e instanceof Error ? e.message : "Failed"); }
     finally     { setLoading(false); }
+  };
+
+  const finishPayment = (status: PaymentStatus) => {
+    setPaymentStatus(status);
+    setStep("confirm");
   };
 
   const reset = () => {
@@ -198,10 +428,24 @@ function RegisterPageContent() {
     if (!keepHospital) setSelHospital(null);
     setPhone("");
     resetPhoneState();
-    setSelDoctor(null); setSelMachine(null); setSelSlot(""); setToken(null); setApptId(null); setError("");
+    setSelDoctor(null); setSelMachine(null); setSelSlot(""); setToken(null); setApptId(null); setIssuedEta(null); setQueuePreview(null); setError("");
+    setAppointmentDate(localDateString()); setAvailability(null);
     setVisitType("new"); setServiceType("doctor");
     setPriority("normal"); setPriorityReason(""); setIssuedPriority("normal");
+    setPaymentMethod("upi"); setPaymentStatus("skipped"); setPaymentRef(""); setFeeAmount(0);
   };
+
+  const selectedSlotAvailability = availability?.slots.find((slot) => slot.slot === selSlot);
+  const canIssueDoctor =
+    Boolean(selDoctor && selSlot && selectedSlotAvailability?.available);
+  const showPaymentStep = needsPaymentStep(serviceType, appointmentDate);
+  const previewAhead = queuePreview?.ahead ?? selectedSlotAvailability?.booked_count ?? 0;
+  const previewToken = previewAhead + 1;
+  const previewWaitMin = estWaitFromQueue(previewAhead, selDoctor?.avg_duration_sec);
+  const previewExpectedBy = fmtEtaTime(
+    estExpectedByDate(previewAhead, selDoctor?.avg_duration_sec, selSlot, appointmentDate).toISOString()
+  );
+  const previewLive = queuePreview?.live ?? false;
 
   const subtitle = selHospital ? `${selHospital.name} · ${selHospital.city}` : "";
 
@@ -209,7 +453,7 @@ function RegisterPageContent() {
     <Shell title="Register" subtitle={subtitle}>
       <div className="register-shell">
         <div className="register-panel">
-          <StepBar current={step} />
+          <StepBar current={step} includePayment={showPaymentStep} />
           <div className="register-body">
             {step === "hospital" && (
               <div>
@@ -403,6 +647,24 @@ function RegisterPageContent() {
                   <button className={`tab-btn ${serviceType === "scan" ? "active" : ""}`} onClick={() => setServiceType("scan")}>🔬 Scan / Radiology</button>
                 </div>
 
+                {serviceType === "doctor" && (
+                  <div style={{ marginBottom: 16 }}>
+                    <label className="input-label">Appointment date</label>
+                    <input
+                      type="date"
+                      className="input"
+                      value={appointmentDate}
+                      min={localDateString()}
+                      max={localDateString(30)}
+                      onChange={(e) => setAppointmentDate(e.target.value)}
+                      style={{ maxWidth: 220 }}
+                    />
+                    <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>
+                      Book up to 30 days ahead. Slots update based on doctor schedule and existing bookings.
+                    </p>
+                  </div>
+                )}
+
                 <div style={{ maxHeight: 320, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
                   {serviceType === "doctor" ? doctors.map((d) => (
                     <button key={d.id} onClick={() => {
@@ -438,16 +700,79 @@ function RegisterPageContent() {
                 </div>
 
                 {serviceType === "doctor" && selDoctor && (
-                  <div style={{ marginTop: 16 }}>
-                    <div className="input-label" style={{ marginBottom: 8 }}>Session slot</div>
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      {(selDoctor.slots || ["morning"]).map((s) => (
-                        <button key={s} type="button" className={`tab-btn ${selSlot === s ? "active" : ""}`} onClick={() => setSelSlot(s)}
-                          style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", padding: "8px 14px", minWidth: 140 }}>
-                          <span>{slotLabel(s)}</span>
-                          <span style={{ fontSize: 11, opacity: 0.75, fontWeight: 400 }}>{slotTime(s)}</span>
-                        </button>
-                      ))}
+                  <div className="register-slot-section" style={{ marginTop: 16 }}>
+                    <div className="register-slot-row">
+                      <div className="register-slot-pick">
+                        <div className="input-label" style={{ marginBottom: 8 }}>
+                          Session slot
+                          {availabilityLoading && <span style={{ color: "var(--muted)", fontWeight: 500 }}> · checking availability…</span>}
+                        </div>
+                        {availability && !availability.works_that_day && (
+                          <p style={{ fontSize: 12, color: "var(--err)", marginBottom: 10 }}>
+                            Doctor does not work on {formatAppointmentDate(appointmentDate)}.
+                          </p>
+                        )}
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          {(selDoctor.slots || ["morning"]).map((s) => {
+                            const slotInfo = availability?.slots.find((slot) => slot.slot === s);
+                            const disabled = Boolean(slotInfo && !slotInfo.available);
+                            return (
+                              <button
+                                key={s}
+                                type="button"
+                                className={`tab-btn ${selSlot === s ? "active" : ""}`}
+                                disabled={disabled}
+                                onClick={() => setSelSlot(s)}
+                                style={{
+                                  display: "flex",
+                                  flexDirection: "column",
+                                  alignItems: "flex-start",
+                                  padding: "8px 14px",
+                                  minWidth: 140,
+                                  opacity: disabled ? 0.55 : 1,
+                                }}
+                              >
+                                <span>{slotLabel(s)}</span>
+                                <span style={{ fontSize: 11, opacity: 0.75, fontWeight: 400 }}>{slotTime(s)}</span>
+                                {slotInfo && (
+                                  <span style={{ fontSize: 11, marginTop: 4, color: disabled ? "var(--err)" : "var(--muted)" }}>
+                                    {disabled ? slotInfo.reason || "Unavailable" : `${slotInfo.booked_count} booked`}
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {selSlot && (
+                        <div className="register-estimate-inline">
+                          <div className="register-estimate-title">If you book now</div>
+                          <div className="register-estimate-stat">
+                            <span className="register-estimate-label">Token</span>
+                            <span className="register-estimate-value">#{previewToken}</span>
+                          </div>
+                          <div className="register-estimate-stat">
+                            <span className="register-estimate-label">Ahead</span>
+                            <span className="register-estimate-value">{previewAhead}</span>
+                          </div>
+                          <div className="register-estimate-stat register-estimate-stat--highlight">
+                            <span className="register-estimate-label">Est. wait</span>
+                            <span className="register-estimate-value">
+                              {previewAhead > 0 ? `~${previewWaitMin} min` : "< 1 min"}
+                            </span>
+                          </div>
+                          <div className="register-estimate-stat">
+                            <span className="register-estimate-label">By</span>
+                            <span className="register-estimate-value">{previewExpectedBy || "—"}</span>
+                          </div>
+                          <p className="register-estimate-note">
+                            {previewLive
+                              ? `Live ${slotShort(selSlot)} queue`
+                              : `~${selDoctor.avg_duration_sec ? Math.round(selDoctor.avg_duration_sec / 60) : 12} min × ${previewAhead} ahead`}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -456,8 +781,85 @@ function RegisterPageContent() {
 
                 <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
                   <button className="btn btn-ghost" onClick={() => setStep("patient")}>← Back</button>
-                  <button className="btn btn-primary" style={{ flex: 1 }} disabled={loading || (serviceType === "doctor" ? !selDoctor || !selSlot : !selMachine)} onClick={issueToken}>
-                    {loading ? "Issuing…" : "Issue token →"}
+                  <button className="btn btn-primary" style={{ flex: 1 }} disabled={loading || (serviceType === "doctor" ? !canIssueDoctor : !selMachine)} onClick={issueToken}>
+                    {loading ? "Booking…" : showPaymentStep ? "Book & continue →" : "Issue token →"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {step === "payment" && token !== null && (
+              <div>
+                <div className="payment-token-banner">
+                  <span>Token reserved</span>
+                  <strong>#{token}</strong>
+                </div>
+
+                <div className="payment-summary">
+                  <div>
+                    <div className="payment-summary-label">Amount due today</div>
+                    <div className="payment-summary-amount">{formatInr(feeAmount)}</div>
+                  </div>
+                  <div className="payment-summary-meta">
+                    {patientName} · {isScan ? selMachine?.name : `${selDoctor?.name} · ${slotShort(selSlot)}`}
+                  </div>
+                </div>
+
+                <div className="payment-method-tabs">
+                  <button
+                    type="button"
+                    className={`tab-btn ${paymentMethod === "upi" ? "active" : ""}`}
+                    onClick={() => setPaymentMethod("upi")}
+                  >
+                    Pay now (UPI)
+                  </button>
+                  <button
+                    type="button"
+                    className={`tab-btn ${paymentMethod === "cash" ? "active" : ""}`}
+                    onClick={() => setPaymentMethod("cash")}
+                  >
+                    Pay later (cash)
+                  </button>
+                </div>
+
+                {paymentMethod === "upi" ? (
+                  <div className="payment-panel">
+                    <p style={{ fontSize: 13, color: "var(--muted)", margin: "0 0 14px" }}>
+                      Scan this demo QR with any UPI app. Token is already issued — payment is for billing only.
+                    </p>
+                    <div className="payment-qr-wrap">
+                      <MockPaymentQr seed={paymentRef || String(apptId || token)} />
+                    </div>
+                    <div className="payment-ref">Ref: {paymentRef}</div>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      style={{ width: "100%", marginTop: 16 }}
+                      onClick={() => finishPayment("paid")}
+                    >
+                      Payment successful
+                    </button>
+                  </div>
+                ) : (
+                  <div className="payment-panel">
+                    <p style={{ fontSize: 13, color: "var(--muted)", margin: "0 0 14px", lineHeight: 1.55 }}>
+                      Patient will pay <strong>{formatInr(feeAmount)}</strong> in cash at the reception desk.
+                      Token <strong>#{token}</strong> is already active.
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      style={{ width: "100%" }}
+                      onClick={() => finishPayment("pending")}
+                    >
+                      Continue with pay-at-desk →
+                    </button>
+                  </div>
+                )}
+
+                <div style={{ marginTop: 16 }}>
+                  <button type="button" className="btn btn-ghost" onClick={() => { setPaymentStatus("pending"); setStep("confirm"); }}>
+                    Skip to token →
                   </button>
                 </div>
               </div>
@@ -469,9 +871,77 @@ function RegisterPageContent() {
                 <div className="token-hero-num">{token}</div>
                 <div style={{ fontSize: 18, fontWeight: 600, marginTop: 8 }}>{patientName || "Patient"}</div>
                 <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>
-                  {isScan ? `${selMachine?.name} · ${SCAN_LABELS[selMachine?.scan_type ?? ""] ?? ""}` : `${selDoctor?.name} · ${selDoctor?.department} · ${slotShort(selSlot)}`}
+                  {isScan
+                    ? `${selMachine?.name} · ${SCAN_LABELS[selMachine?.scan_type ?? ""] ?? ""}`
+                    : `${selDoctor?.name} · ${selDoctor?.department} · ${slotShort(selSlot)} · ${formatAppointmentDate(appointmentDate)}`}
                 </div>
                 <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>{digitsOnly(phone)}</div>
+
+                {paymentStatus !== "skipped" && feeAmount > 0 && (
+                  <div className="payment-status-pill">
+                    <span className={`badge ${paymentStatus === "paid" ? "badge-live" : "badge-warn"}`}>
+                      {paymentStatus === "paid" ? "Paid via UPI" : "Pay at desk (cash)"}
+                    </span>
+                    <span>{formatInr(feeAmount)}</span>
+                    {paymentStatus === "paid" && paymentRef && (
+                      <span style={{ color: "var(--muted)" }}>· {paymentRef}</span>
+                    )}
+                  </div>
+                )}
+
+                {issuedEta && (
+                  <div className="register-estimate-card register-estimate-card--inline-stats" style={{ marginTop: 16, textAlign: "left" }}>
+                    <div className="register-estimate-title">Your queue position</div>
+                    <div className="register-estimate-stat">
+                      <span className="register-estimate-label">Token</span>
+                      <span className="register-estimate-value">#{issuedEta.token}</span>
+                    </div>
+                    <div className="register-estimate-stat">
+                      <span className="register-estimate-label">Ahead</span>
+                      <span className="register-estimate-value">{issuedEta.patients_ahead}</span>
+                    </div>
+                    <div className="register-estimate-stat register-estimate-stat--highlight">
+                      <span className="register-estimate-label">Est. wait</span>
+                      <span className="register-estimate-value">
+                        {resolvedWaitLabel(
+                          issuedEta.patients_ahead,
+                          issuedEta.wait_seconds,
+                          selDoctor?.avg_duration_sec,
+                        )}
+                      </span>
+                    </div>
+                    <div className="register-estimate-stat">
+                      <span className="register-estimate-label">By</span>
+                      <span className="register-estimate-value">
+                        {resolvedExpectedByLabel(
+                          issuedEta.patients_ahead,
+                          issuedEta.wait_seconds,
+                          issuedEta.eta_at,
+                          selDoctor?.avg_duration_sec,
+                          selSlot,
+                          appointmentDate,
+                        ) || "—"}
+                      </span>
+                    </div>
+                    {!isScan && (
+                      <p className="register-estimate-note">
+                        Now serving{" "}
+                        <strong>
+                          {(issuedEta as Eta).current_token != null
+                            ? `#${(issuedEta as Eta).current_token}`
+                            : "—"}
+                        </strong>
+                        {(issuedEta as Eta).doctor_live === false && issuedEta.patients_ahead > 0 && (
+                          <span> · Projected until doctor goes live — may shift when session starts.</span>
+                        )}
+                        {(issuedEta as Eta).doctor_live && issuedEta.patients_ahead === 0 && (
+                          <span> · You&apos;re next in line.</span>
+                        )}
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 <div style={{ marginTop: 10, padding: "10px 14px", background: "var(--accent-light)", borderRadius: 8, fontSize: 12, color: "var(--accent-dark)", textAlign: "left" }}>
                   Confirmation SMS sent to <strong>{digitsOnly(phone)}</strong>.
                   You&apos;ll get another SMS when you&apos;re next in queue.
