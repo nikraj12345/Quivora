@@ -58,6 +58,8 @@ export default function HospitalConsolePage() {
   const [dept, setDept] = useState("");
   const [slots, setSlots] = useState<string[]>(["morning"]);
   const [workDays, setWorkDays] = useState<string[]>(DEFAULT_WORK_DAYS);
+  const [consultationFee, setConsultationFee] = useState(500);
+  const [followUpFee, setFollowUpFee] = useState(300);
   const [saving, setSaving] = useState(false);
 
   const [newDept, setNewDept] = useState("");
@@ -112,8 +114,17 @@ export default function HospitalConsolePage() {
     if (!dept) { setMsg("Add a department first, then select it"); return; }
     setSaving(true); setMsg("");
     try {
-      await api.createDoctor(id, { name: docName.trim(), department: dept, slots, work_days: workDays, is_available: true });
+      await api.createDoctor(id, {
+        name: docName.trim(),
+        department: dept,
+        slots,
+        work_days: workDays,
+        is_available: true,
+        consultation_fee: consultationFee,
+        follow_up_fee: followUpFee,
+      });
       setDocName(""); setSlots(["morning"]); setWorkDays(DEFAULT_WORK_DAYS);
+      setConsultationFee(500); setFollowUpFee(300);
       await load();
       await refresh();
       setMsg("Doctor enrolled");
@@ -138,6 +149,14 @@ export default function HospitalConsolePage() {
 
   const toggleAvailable = async (d: Doctor) => {
     await api.updateDoctor(d.external_id, { is_available: !d.is_available });
+    await load();
+  };
+
+  const updateFees = async (d: Doctor, nextConsultation: number, nextFollowUp: number) => {
+    await api.updateDoctor(d.external_id, {
+      consultation_fee: Math.max(0, nextConsultation),
+      follow_up_fee: Math.max(0, nextFollowUp),
+    });
     await load();
   };
 
@@ -214,6 +233,9 @@ export default function HospitalConsolePage() {
                       {d.department} · {formatWorkDaysList(d.work_days)}
                       {d.works_today === false && <span style={{ color: "var(--warn)" }}> · off today</span>}
                     </div>
+                    <div style={{ fontSize: 12, color: "var(--ink-2)", marginTop: 6 }}>
+                      Fees: ₹{d.consultation_fee ?? 500} new · ₹{d.follow_up_fee ?? 300} follow-up
+                    </div>
                   </div>
                   <div style={{ display: "flex", gap: 6 }}>
                     <button className="btn btn-secondary btn-sm" onClick={() => toggleAvailable(d)}>
@@ -221,6 +243,41 @@ export default function HospitalConsolePage() {
                     </button>
                     <Link href={`/room/${d.external_id}`} className="btn btn-primary btn-sm">Room</Link>
                   </div>
+                </div>
+
+                <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, maxWidth: 320 }}>
+                  <label className="input-label" style={{ fontSize: 11 }}>
+                    New visit fee (₹)
+                    <input
+                      type="number"
+                      className="input"
+                      style={{ marginTop: 4 }}
+                      min={0}
+                      defaultValue={d.consultation_fee ?? 500}
+                      key={`${d.id}-consult-${d.consultation_fee}`}
+                      onBlur={(e) => {
+                        const val = Number(e.target.value);
+                        if (!Number.isFinite(val) || val === d.consultation_fee) return;
+                        updateFees(d, val, d.follow_up_fee ?? 300);
+                      }}
+                    />
+                  </label>
+                  <label className="input-label" style={{ fontSize: 11 }}>
+                    Follow-up fee (₹)
+                    <input
+                      type="number"
+                      className="input"
+                      style={{ marginTop: 4 }}
+                      min={0}
+                      defaultValue={d.follow_up_fee ?? 300}
+                      key={`${d.id}-follow-${d.follow_up_fee}`}
+                      onBlur={(e) => {
+                        const val = Number(e.target.value);
+                        if (!Number.isFinite(val) || val === d.follow_up_fee) return;
+                        updateFees(d, d.consultation_fee ?? 500, val);
+                      }}
+                    />
+                  </label>
                 </div>
 
                 <div style={{ marginTop: 10 }}>
@@ -331,6 +388,33 @@ export default function HospitalConsolePage() {
                       {WEEKDAY_META[day].short}
                     </button>
                   ))}
+                </div>
+              </div>
+              <div>
+                <div className="input-label" style={{ marginBottom: 6 }}>Consultation fees (₹)</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <label className="input-label" style={{ fontSize: 11 }}>
+                    New visit
+                    <input
+                      type="number"
+                      className="input"
+                      style={{ marginTop: 4 }}
+                      min={0}
+                      value={consultationFee}
+                      onChange={(e) => setConsultationFee(Number(e.target.value) || 0)}
+                    />
+                  </label>
+                  <label className="input-label" style={{ fontSize: 11 }}>
+                    Follow-up
+                    <input
+                      type="number"
+                      className="input"
+                      style={{ marginTop: 4 }}
+                      min={0}
+                      value={followUpFee}
+                      onChange={(e) => setFollowUpFee(Number(e.target.value) || 0)}
+                    />
+                  </label>
                 </div>
               </div>
               <div>

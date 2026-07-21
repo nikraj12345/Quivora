@@ -60,6 +60,8 @@ class DoctorCreate(BaseModel):
     slots: List[str] = ["morning"]
     work_days: List[str] = ["mon", "tue", "wed", "thu", "fri", "sat"]
     is_available: bool = True
+    consultation_fee: int = Field(default=500, ge=0, le=50000)
+    follow_up_fee: int = Field(default=300, ge=0, le=50000)
     external_id: Optional[str] = None
 
 
@@ -69,6 +71,8 @@ class DoctorUpdate(BaseModel):
     slots: Optional[List[str]] = None
     work_days: Optional[List[str]] = None
     is_available: Optional[bool] = None
+    consultation_fee: Optional[int] = Field(default=None, ge=0, le=50000)
+    follow_up_fee: Optional[int] = Field(default=None, ge=0, le=50000)
 
 
 class RunningLateBody(BaseModel):
@@ -196,6 +200,8 @@ class DoctorOut(BaseModel):
     avg_duration_sec: Optional[float] = None
     is_live: bool = False
     went_live_at: Optional[datetime] = None
+    consultation_fee: int = 500
+    follow_up_fee: int = 300
 
     class Config:
         from_attributes = True

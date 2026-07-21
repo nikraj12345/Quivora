@@ -313,6 +313,8 @@ def seed_database(db: Session, reset: bool = True) -> Dict[str, Any]:
                     name=d["name"],
                     department=d["department"],
                     slots=_random_slots(rng),
+                    consultation_fee=500,
+                    follow_up_fee=300,
                 ))
             elif not existing.slots:
                 existing.slots = _random_slots(rng)

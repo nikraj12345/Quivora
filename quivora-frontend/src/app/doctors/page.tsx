@@ -70,6 +70,9 @@ export default function DoctorsPage() {
                   {formatSlotsList(d.slots)}
                   {d.is_live && d.active_slot ? ` · live ${slotShort(d.active_slot)}` : ""}
                 </span>
+                <span style={{ fontSize: 12, color: "var(--accent-dark)", fontWeight: 600 }}>
+                  ₹{d.consultation_fee ?? 500} new · ₹{d.follow_up_fee ?? 300} follow-up
+                </span>
               </div>
               <DoctorLiveToggle
                 externalId={d.external_id}

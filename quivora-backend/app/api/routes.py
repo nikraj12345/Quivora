@@ -517,6 +517,8 @@ def _doctor_out(db: Session, d: Doctor) -> DoctorOut:
         avg_duration_sec=float(avg) if avg is not None else None,
         is_live=d.is_live,
         went_live_at=d.went_live_at,
+        consultation_fee=int(getattr(d, "consultation_fee", 500) or 500),
+        follow_up_fee=int(getattr(d, "follow_up_fee", 300) or 300),
     )
 
 
@@ -558,6 +560,8 @@ def create_doctor(hospital_ref: str, body: DoctorCreate, db: Session = Depends(g
         slots=",".join(slots),
         work_days=format_work_days(body.work_days),
         is_available=body.is_available,
+        consultation_fee=body.consultation_fee,
+        follow_up_fee=body.follow_up_fee,
     )
     db.add(d)
     db.commit()
@@ -582,6 +586,10 @@ def update_doctor(doctor_ref: str, body: DoctorUpdate, db: Session = Depends(get
         if not body.is_available and d.is_live:
             d.is_live = False
             d.active_slot = None
+    if body.consultation_fee is not None:
+        d.consultation_fee = body.consultation_fee
+    if body.follow_up_fee is not None:
+        d.follow_up_fee = body.follow_up_fee
     db.commit()
     db.refresh(d)
     recompute_doctor_queue_etas(db, d.id)

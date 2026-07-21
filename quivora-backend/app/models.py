@@ -153,6 +153,8 @@ class Doctor(Base):
     is_on_break: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     break_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     delay_buffer_sec: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    consultation_fee: Mapped[int] = mapped_column(Integer, default=500, server_default="500")
+    follow_up_fee: Mapped[int] = mapped_column(Integer, default=300, server_default="300")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     hospital: Mapped[Hospital] = relationship(back_populates="doctors")

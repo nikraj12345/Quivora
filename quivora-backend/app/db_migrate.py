@@ -29,6 +29,8 @@ def ensure_doctor_columns() -> None:
         ("break_started_at", "TIMESTAMP WITH TIME ZONE"),
         ("delay_buffer_sec", "INTEGER DEFAULT 0"),
         ("queue_epoch_at", "TIMESTAMP WITH TIME ZONE"),
+        ("consultation_fee", "INTEGER DEFAULT 500"),
+        ("follow_up_fee", "INTEGER DEFAULT 300"),
     ]
     with engine.begin() as conn:
         for col, typedef in alters:

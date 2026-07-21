@@ -35,10 +35,12 @@ const SCAN_LABELS: Record<string, string> = {
 function consultationFee(
   serviceType: "doctor" | "scan",
   visitType: "new" | "follow_up",
+  doctor?: Doctor | null,
   scanType?: string,
 ) {
   if (serviceType === "scan") return SCAN_FEES[scanType || ""] ?? 1000;
-  return visitType === "follow_up" ? 300 : 500;
+  if (visitType === "follow_up") return doctor?.follow_up_fee ?? 300;
+  return doctor?.consultation_fee ?? 500;
 }
 
 function formatInr(amount: number) {
@@ -363,6 +365,7 @@ function RegisterPageContent() {
       const fee = consultationFee(
         serviceType,
         visitType,
+        selDoctor,
         selMachine?.scan_type,
       );
       setFeeAmount(fee);
@@ -677,6 +680,10 @@ function RegisterPageContent() {
                         <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{d.department}</div>
                         <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 4 }}>
                           {formatSlotsList(d.slots)}
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--accent-dark)", marginTop: 4, fontWeight: 600 }}>
+                          ₹{visitType === "follow_up" ? (d.follow_up_fee ?? 300) : (d.consultation_fee ?? 500)}
+                          {visitType === "follow_up" ? " follow-up" : " new visit"}
                         </div>
                       </div>
                       <div style={{ textAlign: "right", flexShrink: 0 }}>

@@ -66,6 +66,8 @@ export type Doctor = {
   avg_duration_sec: number | null;
   is_live: boolean;
   went_live_at: string | null;
+  consultation_fee: number;
+  follow_up_fee: number;
 };
 
 export type ReceptionDoctorRow = {
@@ -418,9 +420,9 @@ export const api = {
     request<PatientRecord[]>(`/v1/patients/search?q=${encodeURIComponent(q)}${hospital_id ? `&hospital_id=${hospital_id}` : ""}`),
   patients: (hospital_id?: number) =>
     request<PatientRecord[]>(`/v1/patients${hospital_id ? `?hospital_id=${hospital_id}&limit=100` : "?limit=100"}`),
-  createDoctor: (hospitalRef: string | number, body: { name: string; department: string; slots: string[]; work_days?: string[]; is_available?: boolean }) =>
+  createDoctor: (hospitalRef: string | number, body: { name: string; department: string; slots: string[]; work_days?: string[]; is_available?: boolean; consultation_fee?: number; follow_up_fee?: number }) =>
     request<Doctor>(`/v1/hospitals/${hospitalRef}/doctors`, { method: "POST", body: JSON.stringify(body) }),
-  updateDoctor: (ref: string | number, body: Partial<{ name: string; department: string; slots: string[]; work_days: string[]; is_available: boolean }>) =>
+  updateDoctor: (ref: string | number, body: Partial<{ name: string; department: string; slots: string[]; work_days: string[]; is_available: boolean; consultation_fee: number; follow_up_fee: number }>) =>
     request<Doctor>(`/v1/doctors/${ref}`, { method: "PATCH", body: JSON.stringify(body) }),
   startBreak: (ref: string | number) =>
     request<Doctor>(`/v1/doctors/${ref}/break/start`, { method: "POST" }),
