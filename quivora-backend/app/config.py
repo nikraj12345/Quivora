@@ -19,6 +19,15 @@ class Settings(BaseSettings):
     sms_provider: str = "auto"
     # Free signup credit at https://www.fast2sms.com — Quick route (no DLT)
     fast2sms_api_key: str = ""
+    # development | staging | production
+    env: str = "development"
+    jwt_secret: str = "quivora-dev-jwt-change-in-production"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_hours: float = 12.0
+    doctor_room_token_hours: float = 8.0
+    patient_token_hours: float = 24.0
+    bootstrap_platform_email: str = "admin@quivora.local"
+    bootstrap_platform_password: str = "Quivora@123"
 
     class Config:
         env_prefix = "QUIVORA_"
@@ -28,6 +37,10 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self):
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def is_production(self) -> bool:
+        return self.env.strip().lower() == "production"
 
 
 settings = Settings()

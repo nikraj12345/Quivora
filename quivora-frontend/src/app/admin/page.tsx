@@ -5,9 +5,12 @@ import { useEffect, useState } from "react";
 import { Shell } from "@/components/Shell";
 import { api, Hospital } from "@/lib/api";
 import { useRole } from "@/lib/role";
+import { useAuth } from "@/lib/auth";
 
 export default function AdminPage() {
   const { refresh, setMode, setHospitalId } = useRole();
+  const { user } = useAuth();
+  const isPlatformAdmin = user?.role === "platform_admin";
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
   const [name, setName] = useState("");
   const [city, setCity] = useState("");
@@ -139,10 +142,11 @@ export default function AdminPage() {
         </div>
       </div>
 
+      {isPlatformAdmin && (
       <div className="card" style={{ marginTop: 16, padding: 20 }}>
         <div style={{ fontWeight: 700 }}>Admin tools</div>
         <p style={{ margin: "5px 0 16px", color: "var(--muted)", fontSize: 12 }}>
-          Platform-wide maintenance actions. These controls are not shown on hospital dashboards.
+          Platform-wide maintenance actions. Visible only to platform admins.
         </p>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Link href="/training" className="btn btn-primary">Manage training</Link>
@@ -162,6 +166,7 @@ export default function AdminPage() {
           </p>
         )}
       </div>
+      )}
     </Shell>
   );
 }

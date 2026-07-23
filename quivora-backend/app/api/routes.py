@@ -8,6 +8,23 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.api.deps import (
+    Principal,
+    allowed_hospital_ids,
+    assert_doctor_access,
+    assert_hospital_access,
+    assert_hospital_manage,
+    assert_hospital_operate,
+    effective_role,
+    get_principal,
+    is_platform_admin,
+    can_operate_hospital,
+    require_platform_admin,
+    require_principal,
+    require_staff_read,
+    require_staff_write,
+    scoped_hospital_id_optional,
+)
 from app.config import settings
 from app.db import get_db
 from app.models import (
@@ -37,6 +54,7 @@ from app.schemas import (
     OpdSummaryOut,
     PatientOut,
     PriorityUpdate,
+    PublicTicketOut,
     QueueItemOut,
     ReceptionBoardOut,
     RunningLateBody,
@@ -64,7 +82,9 @@ from app.services.availability import (
     parse_schedule_date,
     validate_appointment_date,
 )
+from app.services.bootstrap_auth import ensure_bootstrap_users
 from app.services.insights import build_hospital_insights
+from app.services.hospital_ref import resolve_hospital
 from app.services.queue import apply_event, create_appointment
 from app.services.scan_eta import predict_scan_duration, record_scan_duration, recompute_scan_queue_etas
 from app.services.reception_board import build_reception_board, format_work_days, parse_work_days, works_today
@@ -81,9 +101,8 @@ from app.worker.celery_app import create_train_job, run_bootstrap_training
 router = APIRouter()
 
 
-def require_api_key(x_api_key: Optional[str] = Header(default=None)):
-    if x_api_key != settings.api_key:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+def _resolve_hospital(hospital_ref: str, db: Session) -> Hospital:
+    return resolve_hospital(hospital_ref, db)
 
 
 def appt_out(db: Session, appt: Appointment) -> AppointmentOut:
@@ -105,6 +124,7 @@ def appt_out(db: Session, appt: Appointment) -> AppointmentOut:
         scheduled_at=appt.scheduled_at,
         started_at=appt.started_at,
         ended_at=appt.ended_at,
+        public_token=appt.public_token,
     )
 
 
@@ -150,23 +170,34 @@ def _hospital_out(db: Session, h: Hospital) -> HospitalOut:
 
 
 @router.get("/v1/hospitals", response_model=list[HospitalOut])
-def list_hospitals(db: Session = Depends(get_db)):
-    hospitals = db.execute(select(Hospital).order_by(Hospital.id)).scalars().all()
+def list_hospitals(
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    stmt = select(Hospital).order_by(Hospital.id)
+    if principal.kind == "anonymous":
+        stmt = stmt.where(Hospital.is_active.is_(True))
+    else:
+        allowed = allowed_hospital_ids(principal)
+        if allowed is not None:
+            stmt = stmt.where(Hospital.id.in_(allowed))
+    hospitals = db.execute(stmt).scalars().all()
     return [_hospital_out(db, h) for h in hospitals]
 
 
 @router.get("/v1/hospitals/{hospital_ref}", response_model=HospitalOut)
-def get_hospital(hospital_ref: str, db: Session = Depends(get_db)):
-    if hospital_ref.isdigit():
-        h = db.get(Hospital, int(hospital_ref))
-    else:
-        h = db.execute(select(Hospital).where(Hospital.external_id == hospital_ref)).scalar_one_or_none()
-    if not h:
-        raise HTTPException(404, "Hospital not found")
+def get_hospital(
+    hospital_ref: str,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    h = _resolve_hospital(hospital_ref, db)
+    if principal.kind != "anonymous":
+        assert_hospital_access(principal, h.id)
     return _hospital_out(db, h)
 
 
-@router.post("/v1/hospitals", response_model=HospitalOut, dependencies=[Depends(require_api_key)])
+@router.post("/v1/hospitals", response_model=HospitalOut, dependencies=[Depends(require_platform_admin)])
 def create_hospital(body: HospitalCreate, db: Session = Depends(get_db)):
     import uuid
     try:
@@ -192,14 +223,20 @@ def create_hospital(body: HospitalCreate, db: Session = Depends(get_db)):
     return _hospital_out(db, h)
 
 
-@router.patch("/v1/hospitals/{hospital_ref}", response_model=HospitalOut, dependencies=[Depends(require_api_key)])
-def update_hospital(hospital_ref: str, body: HospitalUpdate, db: Session = Depends(get_db)):
+@router.patch("/v1/hospitals/{hospital_ref}", response_model=HospitalOut, dependencies=[Depends(require_staff_write)])
+def update_hospital(
+    hospital_ref: str,
+    body: HospitalUpdate,
+    principal: Principal = Depends(require_staff_write),
+    db: Session = Depends(get_db),
+):
     if hospital_ref.isdigit():
         h = db.get(Hospital, int(hospital_ref))
     else:
         h = db.execute(select(Hospital).where(Hospital.external_id == hospital_ref)).scalar_one_or_none()
     if not h:
         raise HTTPException(404, "Hospital not found")
+    assert_hospital_manage(principal, h.id)
     if body.name is not None:
         h.name = body.name.strip()
     if body.city is not None:
@@ -221,20 +258,15 @@ def update_hospital(hospital_ref: str, body: HospitalUpdate, db: Session = Depen
     return _hospital_out(db, h)
 
 
-def _resolve_hospital(hospital_ref: str, db: Session) -> Hospital:
-    if hospital_ref.isdigit():
-        h = db.get(Hospital, int(hospital_ref))
-    else:
-        h = db.execute(select(Hospital).where(Hospital.external_id == hospital_ref)).scalar_one_or_none()
-    if not h:
-        raise HTTPException(404, "Hospital not found")
-    return h
-
-
 @router.get("/v1/hospitals/{hospital_ref}/qr", response_model=HospitalQrInfoOut)
-def hospital_qr_info(hospital_ref: str, db: Session = Depends(get_db)):
+def hospital_qr_info(
+    hospital_ref: str,
+    principal: Principal = Depends(require_staff_read),
+    db: Session = Depends(get_db),
+):
     """QR metadata + sample seeded phones for desk/print use."""
     h = _resolve_hospital(hospital_ref, db)
+    assert_hospital_access(principal, h.id)
     samples = db.execute(
         select(Patient)
         .where(Patient.hospital_id == h.id, Patient.phone.isnot(None))
@@ -331,10 +363,16 @@ def list_departments(hospital_ref: str, db: Session = Depends(get_db)):
 @router.post(
     "/v1/hospitals/{hospital_ref}/departments",
     response_model=DepartmentOut,
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_staff_write)],
 )
-def create_department(hospital_ref: str, body: DepartmentCreate, db: Session = Depends(get_db)):
+def create_department(
+    hospital_ref: str,
+    body: DepartmentCreate,
+    principal: Principal = Depends(require_staff_write),
+    db: Session = Depends(get_db),
+):
     h = _resolve_hospital(hospital_ref, db)
+    assert_hospital_manage(principal, h.id)
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "Department name is required")
@@ -355,10 +393,16 @@ def create_department(hospital_ref: str, body: DepartmentCreate, db: Session = D
 
 @router.delete(
     "/v1/hospitals/{hospital_ref}/departments/{department_id}",
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_staff_write)],
 )
-def delete_department(hospital_ref: str, department_id: int, db: Session = Depends(get_db)):
+def delete_department(
+    hospital_ref: str,
+    department_id: int,
+    principal: Principal = Depends(require_staff_write),
+    db: Session = Depends(get_db),
+):
     h = _resolve_hospital(hospital_ref, db)
+    assert_hospital_manage(principal, h.id)
     dept = db.get(Department, department_id)
     if not dept or dept.hospital_id != h.id:
         raise HTTPException(404, "Department not found")
@@ -376,25 +420,50 @@ def delete_department(hospital_ref: str, department_id: int, db: Session = Depen
 
 
 @router.get("/v1/patients/search", response_model=list[PatientOut])
-def search_patients(q: str = "", hospital_id: Optional[int] = None, db: Session = Depends(get_db)):
+def search_patients(
+    q: str = "",
+    hospital_id: Optional[int] = None,
+    principal: Principal = Depends(require_staff_read),
+    db: Session = Depends(get_db),
+):
+    hospital_id = scoped_hospital_id_optional(principal, hospital_id)
+    if hospital_id is None:
+        raise HTTPException(400, "hospital_id is required")
     stmt = select(Patient)
-    if hospital_id:
-        stmt = stmt.where(Patient.hospital_id == hospital_id)
+    stmt = stmt.where(Patient.hospital_id == hospital_id)
     if q.strip():
         stmt = stmt.where(Patient.name.ilike(f"%{q.strip()}%"))
     return db.execute(stmt.order_by(Patient.name).limit(20)).scalars().all()
 
 
 @router.get("/v1/patients", response_model=list[PatientOut])
-def list_patients(hospital_id: Optional[int] = None, limit: int = 50, db: Session = Depends(get_db)):
-    stmt = select(Patient).order_by(Patient.name).limit(min(limit, 200))
-    if hospital_id:
-        stmt = stmt.where(Patient.hospital_id == hospital_id)
+def list_patients(
+    hospital_id: Optional[int] = None,
+    limit: int = 50,
+    principal: Principal = Depends(require_staff_read),
+    db: Session = Depends(get_db),
+):
+    hospital_id = scoped_hospital_id_optional(principal, hospital_id)
+    if hospital_id is None:
+        raise HTTPException(400, "hospital_id is required")
+    stmt = (
+        select(Patient)
+        .where(Patient.hospital_id == hospital_id)
+        .order_by(Patient.name)
+        .limit(min(limit, 200))
+    )
     return db.execute(stmt).scalars().all()
 
 
 @router.get("/v1/opd/summary", response_model=OpdSummaryOut)
-def opd_summary(hospital_id: Optional[int] = None, db: Session = Depends(get_db)):
+def opd_summary(
+    hospital_id: Optional[int] = None,
+    principal: Principal = Depends(require_staff_read),
+    db: Session = Depends(get_db),
+):
+    hospital_id = scoped_hospital_id_optional(principal, hospital_id)
+    if hospital_id is None:
+        raise HTTPException(400, "hospital_id is required")
     from datetime import datetime, timezone
     from app.models import AppointmentStatus
 
@@ -467,17 +536,22 @@ def opd_summary(hospital_id: Optional[int] = None, db: Session = Depends(get_db)
     )
 
 
-@router.post("/v1/admin/seed", response_model=SeedResponse, dependencies=[Depends(require_api_key)])
+@router.post("/v1/admin/seed", response_model=SeedResponse, dependencies=[Depends(require_platform_admin)])
 def seed(reset: bool = True, db: Session = Depends(get_db)):
+    if settings.is_production:
+        raise HTTPException(403, "Seed is disabled in production")
     result = seed_database(db, reset=reset)
+    ensure_bootstrap_users(db)
     return SeedResponse(**result)
 
 
 @router.post(
     "/v1/admin/seed-insights/{hospital_ref}",
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_platform_admin)],
 )
 def seed_insights(hospital_ref: str, days: int = 21, db: Session = Depends(get_db)):
+    if settings.is_production:
+        raise HTTPException(403, "Seed insights is disabled in production")
     if not 7 <= days <= 90:
         raise HTTPException(400, "days must be between 7 and 90")
     hospital = _resolve_hospital(hospital_ref, db)
@@ -523,7 +597,21 @@ def _doctor_out(db: Session, d: Doctor) -> DoctorOut:
 
 
 @router.get("/v1/doctors", response_model=list[DoctorOut])
-def list_doctors(hospital_id: Optional[int] = None, db: Session = Depends(get_db)):
+def list_doctors(
+    hospital_id: Optional[int] = None,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    if principal.kind == "anonymous":
+        if hospital_id is None:
+            raise HTTPException(400, "hospital_id is required")
+        hospital = db.get(Hospital, hospital_id)
+        if not hospital or not hospital.is_active:
+            raise HTTPException(404, "Hospital not found")
+    else:
+        hospital_id = scoped_hospital_id_optional(principal, hospital_id)
+        if hospital_id is None and not is_platform_admin(principal) and not principal.is_service:
+            raise HTTPException(400, "hospital_id is required")
     stmt = select(Doctor).order_by(Doctor.id)
     if hospital_id:
         stmt = stmt.where(Doctor.hospital_id == hospital_id)
@@ -531,10 +619,16 @@ def list_doctors(hospital_id: Optional[int] = None, db: Session = Depends(get_db
     return [_doctor_out(db, d) for d in doctors]
 
 
-@router.post("/v1/hospitals/{hospital_ref}/doctors", response_model=DoctorOut, dependencies=[Depends(require_api_key)])
-def create_doctor(hospital_ref: str, body: DoctorCreate, db: Session = Depends(get_db)):
+@router.post("/v1/hospitals/{hospital_ref}/doctors", response_model=DoctorOut, dependencies=[Depends(require_staff_write)])
+def create_doctor(
+    hospital_ref: str,
+    body: DoctorCreate,
+    principal: Principal = Depends(require_staff_write),
+    db: Session = Depends(get_db),
+):
     import uuid
     h = _resolve_hospital(hospital_ref, db)
+    assert_hospital_manage(principal, h.id)
     slots = [s for s in body.slots if s in ("morning", "afternoon", "evening")] or ["morning"]
     dept_name = body.department.strip()
     if not dept_name:
@@ -569,9 +663,18 @@ def create_doctor(hospital_ref: str, body: DoctorCreate, db: Session = Depends(g
     return _doctor_out(db, d)
 
 
-@router.patch("/v1/doctors/{doctor_ref}", response_model=DoctorOut, dependencies=[Depends(require_api_key)])
-def update_doctor(doctor_ref: str, body: DoctorUpdate, db: Session = Depends(get_db)):
+@router.patch("/v1/doctors/{doctor_ref}", response_model=DoctorOut, dependencies=[Depends(require_staff_write)])
+def update_doctor(
+    doctor_ref: str,
+    body: DoctorUpdate,
+    principal: Principal = Depends(require_staff_write),
+    db: Session = Depends(get_db),
+):
     d = _resolve_doctor(doctor_ref, db)
+    if body.consultation_fee is not None or body.follow_up_fee is not None:
+        assert_hospital_manage(principal, d.hospital_id)
+    else:
+        assert_hospital_operate(principal, d.hospital_id)
     if body.name is not None:
         d.name = body.name.strip()
     if body.department is not None:
@@ -608,18 +711,31 @@ def _resolve_doctor(doctor_ref: str, db: Session) -> Doctor:
 
 
 @router.get("/v1/doctors/{doctor_ref}", response_model=DoctorOut)
-def get_doctor(doctor_ref: str, db: Session = Depends(get_db)):
-    return _doctor_out(db, _resolve_doctor(doctor_ref, db))
+def get_doctor(
+    doctor_ref: str,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    d = _resolve_doctor(doctor_ref, db)
+    if principal.kind != "anonymous":
+        assert_hospital_access(principal, d.hospital_id)
+    return _doctor_out(db, d)
 
 
-@router.post("/v1/doctors/{doctor_ref}/go-live", response_model=DoctorOut, dependencies=[Depends(require_api_key)])
-def go_live(doctor_ref: str, slot: Optional[str] = None, db: Session = Depends(get_db)):
+@router.post("/v1/doctors/{doctor_ref}/go-live", response_model=DoctorOut, dependencies=[Depends(require_staff_write)])
+def go_live(
+    doctor_ref: str,
+    slot: Optional[str] = None,
+    principal: Principal = Depends(require_staff_write),
+    db: Session = Depends(get_db),
+):
     from datetime import datetime, timezone
     from app.services.telegram_bot import notify_doctor_live
     from app.services.queue import clear_session_queues
     from app.models import AppointmentStatus, Prediction, SLOT_ORDER, SLOT_LABELS
 
     d = _resolve_doctor(doctor_ref, db)
+    assert_doctor_access(principal, d.id, d.hospital_id)
     available = [s.strip() for s in (d.slots or "morning").split(",") if s.strip()] or ["morning"]
     if slot and slot not in available:
         raise HTTPException(400, f"Doctor does not offer {slot}. Available: {', '.join(available)}")
@@ -677,6 +793,7 @@ def go_live(doctor_ref: str, slot: Optional[str] = None, db: Session = Depends(g
                 eta_time,
                 pred.confidence_min or 10.0,
                 pred.patients_ahead or 0,
+                appt.public_token,
             )
         sms.notify_doctor_live(
             sms.phone_from_patient(appt.patient),
@@ -686,26 +803,32 @@ def go_live(doctor_ref: str, slot: Optional[str] = None, db: Session = Depends(g
             eta_time,
             pred.confidence_min or 10.0,
             pred.patients_ahead or 0,
+            appt.public_token,
         )
 
     return _doctor_out(db, d)
 
 
 @router.get("/v1/hospitals/{hospital_ref}/reception-board", response_model=ReceptionBoardOut)
-def reception_board(hospital_ref: str, db: Session = Depends(get_db)):
+def reception_board(
+    hospital_ref: str,
+    principal: Principal = Depends(require_staff_read),
+    db: Session = Depends(get_db),
+):
     h = _resolve_hospital(hospital_ref, db)
+    assert_hospital_access(principal, h.id)
     return build_reception_board(db, h.id, h.name)
 
 
 @router.get(
     "/v1/hospitals/{hospital_ref}/insights",
     response_model=InsightsOut,
-    dependencies=[Depends(require_api_key)],
 )
 def hospital_insights(
     hospital_ref: str,
     days: int = 7,
     delay_threshold_min: int = 30,
+    principal: Principal = Depends(require_principal),
     db: Session = Depends(get_db),
 ):
     if days not in (1, 7, 30, 90):
@@ -713,6 +836,10 @@ def hospital_insights(
     if not 5 <= delay_threshold_min <= 180:
         raise HTTPException(400, "delay_threshold_min must be between 5 and 180")
     h = _resolve_hospital(hospital_ref, db)
+    role = effective_role(principal)
+    if not is_platform_admin(principal) and role != "hospital_admin":
+        raise HTTPException(403, "Hospital admin access required for insights")
+    assert_hospital_access(principal, h.id)
     return build_hospital_insights(db, h, days=days, delay_threshold_min=delay_threshold_min)
 
 
@@ -731,12 +858,17 @@ def _waiting_in_active_slot(db: Session, d: Doctor):
     ).scalars().all()
 
 
-@router.post("/v1/doctors/{doctor_ref}/break/start", response_model=DoctorOut, dependencies=[Depends(require_api_key)])
-def start_break(doctor_ref: str, db: Session = Depends(get_db)):
+@router.post("/v1/doctors/{doctor_ref}/break/start", response_model=DoctorOut, dependencies=[Depends(require_staff_write)])
+def start_break(
+    doctor_ref: str,
+    principal: Principal = Depends(require_staff_write),
+    db: Session = Depends(get_db),
+):
     from datetime import datetime, timezone
     from app.services.telegram_bot import notify_break_started
 
     d = _resolve_doctor(doctor_ref, db)
+    assert_doctor_access(principal, d.id, d.hospital_id)
     if not d.is_live:
         raise HTTPException(400, "Doctor must be live to start a break")
     if d.is_on_break:
@@ -751,18 +883,23 @@ def start_break(doctor_ref: str, db: Session = Depends(get_db)):
         if not appt.patient:
             continue
         if appt.telegram_chat_id:
-            notify_break_started(appt.telegram_chat_id, appt.patient.name, appt.token, d.name)
-        sms.notify_break_started(sms.phone_from_patient(appt.patient), appt.patient.name, appt.token, d.name)
+            notify_break_started(appt.telegram_chat_id, appt.patient.name, appt.token, d.name, appt.public_token)
+        sms.notify_break_started(sms.phone_from_patient(appt.patient), appt.patient.name, appt.token, d.name, appt.public_token)
     return _doctor_out(db, d)
 
 
-@router.post("/v1/doctors/{doctor_ref}/break/end", response_model=DoctorOut, dependencies=[Depends(require_api_key)])
-def end_break(doctor_ref: str, db: Session = Depends(get_db)):
+@router.post("/v1/doctors/{doctor_ref}/break/end", response_model=DoctorOut, dependencies=[Depends(require_staff_write)])
+def end_break(
+    doctor_ref: str,
+    principal: Principal = Depends(require_staff_write),
+    db: Session = Depends(get_db),
+):
     from datetime import datetime, timezone
     from app.services.telegram_bot import notify_break_ended
     from app.models import Prediction
 
     d = _resolve_doctor(doctor_ref, db)
+    assert_doctor_access(principal, d.id, d.hospital_id)
     if not d.is_on_break:
         raise HTTPException(400, "Doctor is not on break")
     now = datetime.now(timezone.utc)
@@ -787,17 +924,23 @@ def end_break(doctor_ref: str, db: Session = Depends(get_db)):
         pred = db.execute(select(Prediction).where(Prediction.appointment_id == appt.id)).scalar_one_or_none()
         eta_time = pred.eta_at.astimezone().strftime("%-I:%M %p") if pred and pred.eta_at else None
         if appt.telegram_chat_id:
-            notify_break_ended(appt.telegram_chat_id, appt.patient.name, appt.token, d.name, eta_time)
-        sms.notify_break_ended(sms.phone_from_patient(appt.patient), appt.patient.name, appt.token, d.name, eta_time)
+            notify_break_ended(appt.telegram_chat_id, appt.patient.name, appt.token, d.name, eta_time, appt.public_token)
+        sms.notify_break_ended(sms.phone_from_patient(appt.patient), appt.patient.name, appt.token, d.name, eta_time, appt.public_token)
     return _doctor_out(db, d)
 
 
-@router.post("/v1/doctors/{doctor_ref}/running-late", response_model=DoctorOut, dependencies=[Depends(require_api_key)])
-def running_late(doctor_ref: str, body: RunningLateBody, db: Session = Depends(get_db)):
+@router.post("/v1/doctors/{doctor_ref}/running-late", response_model=DoctorOut, dependencies=[Depends(require_staff_write)])
+def running_late(
+    doctor_ref: str,
+    body: RunningLateBody,
+    principal: Principal = Depends(require_staff_write),
+    db: Session = Depends(get_db),
+):
     from app.services.telegram_bot import notify_running_late
     from app.models import Prediction
 
     d = _resolve_doctor(doctor_ref, db)
+    assert_doctor_access(principal, d.id, d.hospital_id)
     if not d.is_live:
         raise HTTPException(400, "Doctor must be live to broadcast running late")
     extra = body.minutes * 60
@@ -812,18 +955,24 @@ def running_late(doctor_ref: str, body: RunningLateBody, db: Session = Depends(g
         pred = db.execute(select(Prediction).where(Prediction.appointment_id == appt.id)).scalar_one_or_none()
         eta_time = pred.eta_at.astimezone().strftime("%-I:%M %p") if pred and pred.eta_at else None
         if appt.telegram_chat_id:
-            notify_running_late(appt.telegram_chat_id, appt.patient.name, appt.token, d.name, body.minutes, eta_time)
+            notify_running_late(appt.telegram_chat_id, appt.patient.name, appt.token, d.name, body.minutes, eta_time, appt.public_token)
         sms.notify_running_late(
-            sms.phone_from_patient(appt.patient), appt.patient.name, appt.token, d.name, body.minutes, eta_time
+            sms.phone_from_patient(appt.patient), appt.patient.name, appt.token, d.name, body.minutes, eta_time,
+            appt.public_token,
         )
     return _doctor_out(db, d)
 
 
-@router.post("/v1/doctors/{doctor_ref}/go-offline", response_model=DoctorOut, dependencies=[Depends(require_api_key)])
-def go_offline(doctor_ref: str, db: Session = Depends(get_db)):
+@router.post("/v1/doctors/{doctor_ref}/go-offline", response_model=DoctorOut, dependencies=[Depends(require_staff_write)])
+def go_offline(
+    doctor_ref: str,
+    principal: Principal = Depends(require_staff_write),
+    db: Session = Depends(get_db),
+):
     from app.services.queue import clear_session_queues
 
     d = _resolve_doctor(doctor_ref, db)
+    assert_doctor_access(principal, d.id, d.hospital_id)
     ended_slot = d.active_slot or "session"
     # Session ended — empty leftover waiting queue
     clear_session_queues(
@@ -885,8 +1034,12 @@ def doctor_schedule(doctor_ref: str, date: Optional[str] = None, db: Session = D
     )
 
 
-@router.post("/v1/appointments", response_model=AppointmentOut, dependencies=[Depends(require_api_key)])
-def post_appointment(body: AppointmentCreate, db: Session = Depends(get_db)):
+@router.post("/v1/appointments", response_model=AppointmentOut, dependencies=[Depends(require_staff_write)])
+def post_appointment(
+    body: AppointmentCreate,
+    principal: Principal = Depends(require_staff_write),
+    db: Session = Depends(get_db),
+):
     try:
         appt = create_appointment(
             db,
@@ -906,19 +1059,45 @@ def post_appointment(body: AppointmentCreate, db: Session = Depends(get_db)):
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    assert_hospital_operate(principal, appt.hospital_id)
+    if principal.is_his and principal.hospital_id != appt.hospital_id:
+        raise HTTPException(403, "HIS key cannot create appointments for another hospital")
     return appt_out(db, appt)
 
 
 @router.get("/v1/appointments/{appointment_id}", response_model=AppointmentOut)
-def get_appointment(appointment_id: int, db: Session = Depends(get_db)):
+def get_appointment(
+    appointment_id: int,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
     appt = db.get(Appointment, appointment_id)
     if not appt:
         raise HTTPException(404, "Not found")
-    return appt_out(db, appt)
+    if principal.kind == "anonymous":
+        raise HTTPException(401, "Authentication required")
+    role = effective_role(principal)
+    if role == "patient" and principal.patient_id == appt.patient_id:
+        return appt_out(db, appt)
+    if can_operate_hospital(principal, appt.hospital_id):
+        return appt_out(db, appt)
+    if principal.is_service or principal.is_his:
+        if principal.is_his and principal.hospital_id != appt.hospital_id:
+            raise HTTPException(403, "No access to this appointment")
+        return appt_out(db, appt)
+    raise HTTPException(403, "No access to this appointment")
 
 
-@router.post("/v1/events", response_model=AppointmentOut, dependencies=[Depends(require_api_key)])
-def post_event(body: EventCreate, db: Session = Depends(get_db)):
+@router.post("/v1/events", response_model=AppointmentOut, dependencies=[Depends(require_staff_write)])
+def post_event(
+    body: EventCreate,
+    principal: Principal = Depends(require_staff_write),
+    db: Session = Depends(get_db),
+):
+    appt = db.get(Appointment, body.appointment_id)
+    if not appt:
+        raise HTTPException(404, "Appointment not found")
+    assert_doctor_access(principal, appt.doctor_id, appt.hospital_id)
     try:
         appt = apply_event(db, body.appointment_id, body.event_type)
     except ValueError as e:
@@ -931,9 +1110,12 @@ def doctor_queue(
     doctor_ref: str,
     slot: Optional[str] = None,
     date: Optional[str] = None,
+    principal: Principal = Depends(require_staff_read),
     db: Session = Depends(get_db),
 ):
     doctor = _resolve_doctor(doctor_ref, db)
+    assert_hospital_access(principal, doctor.hospital_id)
+    assert_doctor_access(principal, doctor.id, doctor.hospital_id)
     doctor_id = doctor.id
     from app.models import AppointmentStatus, SLOT_ORDER
     from app.services.queue import session_day_bounds_utc
@@ -1000,14 +1182,20 @@ def doctor_queue(
     return items
 
 
-@router.patch("/v1/appointments/{appointment_id}/priority", response_model=AppointmentOut, dependencies=[Depends(require_api_key)])
-def set_appointment_priority(appointment_id: int, body: PriorityUpdate, db: Session = Depends(get_db)):
+@router.patch("/v1/appointments/{appointment_id}/priority", response_model=AppointmentOut, dependencies=[Depends(require_staff_write)])
+def set_appointment_priority(
+    appointment_id: int,
+    body: PriorityUpdate,
+    principal: Principal = Depends(require_staff_write),
+    db: Session = Depends(get_db),
+):
     from app.models import EventType, PRIORITY_LABELS, QueueEvent
     from datetime import datetime, timezone
 
     appt = db.get(Appointment, appointment_id)
     if not appt:
         raise HTTPException(404, "Not found")
+    assert_hospital_operate(principal, appt.hospital_id)
     p = body.priority.strip().lower()
     if p not in ("emergency", "senior", "urgent", "normal"):
         raise HTTPException(400, "priority must be emergency | senior | urgent | normal")
@@ -1031,12 +1219,25 @@ def set_appointment_priority(appointment_id: int, body: PriorityUpdate, db: Sess
 
 
 @router.get("/v1/appointments/{appointment_id}/eta", response_model=EtaOut)
-def appointment_eta(appointment_id: int, db: Session = Depends(get_db)):
+def appointment_eta(
+    appointment_id: int,
+    principal: Principal = Depends(require_principal),
+    db: Session = Depends(get_db),
+):
     from app.services.queue import current_serving_token
 
     appt = db.get(Appointment, appointment_id)
     if not appt:
         raise HTTPException(404, "Not found")
+    role = effective_role(principal)
+    if role == "patient" and principal.patient_id == appt.patient_id:
+        pass
+    elif can_operate_hospital(principal, appt.hospital_id):
+        pass
+    elif principal.is_service or (principal.is_his and principal.hospital_id == appt.hospital_id):
+        pass
+    else:
+        raise HTTPException(403, "No access to this appointment")
     recompute_doctor_queue_etas(db, appt.doctor_id)
     db.refresh(appt)
     pred_sec, conf = predict_duration_sec(db, appt.doctor_id, appt.age_band)
@@ -1063,7 +1264,7 @@ def appointment_eta(appointment_id: int, db: Session = Depends(get_db)):
 @router.post(
     "/v1/train/bootstrap",
     response_model=TrainStartResponse,
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_platform_admin)],
 )
 def start_training(fast: bool = False, db: Session = Depends(get_db)):
     # Ensure hospitals/doctors exist — never wipe live patient queues
@@ -1082,7 +1283,7 @@ def start_training(fast: bool = False, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/v1/train/status/{job_id}", response_model=TrainStatusOut)
+@router.get("/v1/train/status/{job_id}", response_model=TrainStatusOut, dependencies=[Depends(require_platform_admin)])
 def train_status(job_id: str, db: Session = Depends(get_db)):
     job = db.get(TrainJob, job_id)
     if not job:
@@ -1109,7 +1310,7 @@ def train_status(job_id: str, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/v1/train/stats", response_model=TrainStatsOut)
+@router.get("/v1/train/stats", response_model=TrainStatsOut, dependencies=[Depends(require_platform_admin)])
 def train_stats(db: Session = Depends(get_db)):
     doctors = db.execute(select(Doctor).order_by(Doctor.id)).scalars().all()
     rows = []
@@ -1171,7 +1372,14 @@ def _resolve_machine(machine_ref: str, db: Session) -> ScanMachine:
 
 
 @router.get("/v1/scans/machines", response_model=list[ScanMachineOut])
-def list_machines(hospital_id: Optional[int] = None, db: Session = Depends(get_db)):
+def list_machines(
+    hospital_id: Optional[int] = None,
+    principal: Principal = Depends(require_staff_read),
+    db: Session = Depends(get_db),
+):
+    hospital_id = scoped_hospital_id_optional(principal, hospital_id)
+    if hospital_id is None and not is_platform_admin(principal) and not principal.is_service:
+        raise HTTPException(400, "hospital_id is required")
     stmt = select(ScanMachine).order_by(ScanMachine.id)
     if hospital_id:
         stmt = stmt.where(ScanMachine.hospital_id == hospital_id)
@@ -1180,17 +1388,28 @@ def list_machines(hospital_id: Optional[int] = None, db: Session = Depends(get_d
 
 
 @router.get("/v1/scans/machines/{machine_ref}", response_model=ScanMachineOut)
-def get_machine(machine_ref: str, db: Session = Depends(get_db)):
-    return _machine_out(db, _resolve_machine(machine_ref, db))
+def get_machine(
+    machine_ref: str,
+    principal: Principal = Depends(require_staff_read),
+    db: Session = Depends(get_db),
+):
+    m = _resolve_machine(machine_ref, db)
+    assert_hospital_access(principal, m.hospital_id)
+    return _machine_out(db, m)
 
 
-@router.post("/v1/scans/machines/{machine_ref}/go-live", response_model=ScanMachineOut, dependencies=[Depends(require_api_key)])
-def scan_go_live(machine_ref: str, db: Session = Depends(get_db)):
+@router.post("/v1/scans/machines/{machine_ref}/go-live", response_model=ScanMachineOut, dependencies=[Depends(require_staff_write)])
+def scan_go_live(
+    machine_ref: str,
+    principal: Principal = Depends(require_staff_write),
+    db: Session = Depends(get_db),
+):
     from datetime import datetime, timezone
     from app.services.telegram_bot import notify_scan_live
     from app.models import ScanStatus, ScanPrediction
 
     m = _resolve_machine(machine_ref, db)
+    assert_hospital_operate(principal, m.hospital_id)
     m.is_live = True
     m.went_live_at = datetime.now(timezone.utc)
     db.commit()
@@ -1222,6 +1441,7 @@ def scan_go_live(machine_ref: str, db: Session = Depends(get_db)):
                 eta_time,
                 pred.confidence_min or 10.0,
                 pred.patients_ahead or 0,
+                appt.public_token,
             )
         sms.notify_scan_live(
             sms.phone_from_patient(appt.patient),
@@ -1231,14 +1451,20 @@ def scan_go_live(machine_ref: str, db: Session = Depends(get_db)):
             eta_time,
             pred.confidence_min or 10.0,
             pred.patients_ahead or 0,
+            appt.public_token,
         )
 
     return _machine_out(db, m)
 
 
-@router.post("/v1/scans/machines/{machine_ref}/go-offline", response_model=ScanMachineOut, dependencies=[Depends(require_api_key)])
-def scan_go_offline(machine_ref: str, db: Session = Depends(get_db)):
+@router.post("/v1/scans/machines/{machine_ref}/go-offline", response_model=ScanMachineOut, dependencies=[Depends(require_staff_write)])
+def scan_go_offline(
+    machine_ref: str,
+    principal: Principal = Depends(require_staff_write),
+    db: Session = Depends(get_db),
+):
     m = _resolve_machine(machine_ref, db)
+    assert_hospital_operate(principal, m.hospital_id)
     m.is_live = False
     db.commit()
     db.refresh(m)
@@ -1246,8 +1472,13 @@ def scan_go_offline(machine_ref: str, db: Session = Depends(get_db)):
 
 
 @router.get("/v1/scans/machines/{machine_ref}/queue", response_model=list[ScanQueueItemOut])
-def scan_queue(machine_ref: str, db: Session = Depends(get_db)):
+def scan_queue(
+    machine_ref: str,
+    principal: Principal = Depends(require_staff_read),
+    db: Session = Depends(get_db),
+):
     m = _resolve_machine(machine_ref, db)
+    assert_hospital_access(principal, m.hospital_id)
     recompute_scan_queue_etas(db, m.id)
     active = [ScanStatus.scheduled, ScanStatus.arrived, ScanStatus.in_progress]
     appts = db.execute(
@@ -1273,22 +1504,23 @@ def scan_queue(machine_ref: str, db: Session = Depends(get_db)):
     return result
 
 
-@router.post("/v1/scans/appointments", response_model=ScanAppointmentOut, dependencies=[Depends(require_api_key)])
-def create_scan_appointment(body: ScanAppointmentCreate, db: Session = Depends(get_db)):
+@router.post("/v1/scans/appointments", response_model=ScanAppointmentOut, dependencies=[Depends(require_staff_write)])
+def create_scan_appointment(
+    body: ScanAppointmentCreate,
+    principal: Principal = Depends(require_staff_write),
+    db: Session = Depends(get_db),
+):
     import uuid
     from app.services.age_bands import age_to_band
 
     m = db.execute(select(ScanMachine).where(ScanMachine.external_id == body.machine_external_id)).scalar_one_or_none()
     if not m:
         raise HTTPException(404, f"Machine {body.machine_external_id} not found")
-
-    hospital = db.execute(select(Hospital).limit(1)).scalar_one_or_none()
-    if not hospital:
-        raise HTTPException(400, "Hospital not seeded")
+    assert_hospital_operate(principal, m.hospital_id)
 
     patient_name = body.patient_name or "Walk-in patient"
     patient = Patient(
-        hospital_id=hospital.id,
+        hospital_id=m.hospital_id,
         external_id=f"PAT-SCAN-{uuid.uuid4().hex[:8].upper()}",
         name=patient_name,
         age=body.age,
@@ -1327,7 +1559,7 @@ def create_scan_appointment(body: ScanAppointmentCreate, db: Session = Depends(g
                 ScanAppointment.token < appt.token,
             )
         ).scalar() or 0
-        tg_booked(auto_chat, patient.name, appt.token, ahead, m.name)
+        tg_booked(auto_chat, patient.name, appt.token, ahead, m.name, appt.public_token)
 
     return ScanAppointmentOut(
         id=appt.id,
@@ -1340,22 +1572,27 @@ def create_scan_appointment(body: ScanAppointmentCreate, db: Session = Depends(g
         age=appt.age,
         age_band=appt.age_band,
         status=appt.status.value,
+        public_token=appt.public_token,
     )
-
-
-@router.post("/v1/scans/events", response_model=ScanAppointmentOut, dependencies=[Depends(require_api_key)])
-def scan_event(body: ScanEventCreate, db: Session = Depends(get_db)):
+def scan_event(
+    body: ScanEventCreate,
+    principal: Principal = Depends(require_staff_write),
+    db: Session = Depends(get_db),
+):
     from datetime import datetime, timezone
     appt = db.get(ScanAppointment, body.appointment_id)
     if not appt:
         raise HTTPException(404, "Scan appointment not found")
+    machine = db.get(ScanMachine, appt.machine_id)
+    if not machine:
+        raise HTTPException(404, "Scan machine not found")
+    assert_hospital_operate(principal, machine.hospital_id)
 
     from app.services import telegram_bot as tg_scan
     now = datetime.now(timezone.utc)
     et = body.event_type
     chat_id = appt.telegram_chat_id
     phone = sms.phone_from_patient(appt.patient)
-    machine = db.get(ScanMachine, appt.machine_id)
     machine_name = machine.name if machine else "Scan"
     patient_name = appt.patient.name if appt.patient else "Patient"
 
@@ -1365,8 +1602,8 @@ def scan_event(body: ScanEventCreate, db: Session = Depends(get_db)):
         appt.status = ScanStatus.in_progress
         appt.started_at = now
         if chat_id:
-            tg_scan.notify_started(chat_id, patient_name, appt.token, machine_name)
-        sms.notify_started(phone, patient_name, appt.token, machine_name)
+            tg_scan.notify_started(chat_id, patient_name, appt.token, machine_name, appt.public_token)
+        sms.notify_started(phone, patient_name, appt.token, machine_name, appt.public_token)
     elif et == "scan_ended":
         appt.status = ScanStatus.completed
         appt.ended_at = now
@@ -1374,13 +1611,13 @@ def scan_event(body: ScanEventCreate, db: Session = Depends(get_db)):
             duration = int((now - appt.started_at.replace(tzinfo=timezone.utc)).total_seconds())
             record_scan_duration(db, appt.machine_id, machine.scan_type.value, appt.age_band, duration)
         if chat_id:
-            tg_scan.notify_ended(chat_id, patient_name, machine_name)
-        sms.notify_ended(phone, patient_name, machine_name)
+            tg_scan.notify_ended(chat_id, patient_name, machine_name, appt.public_token)
+        sms.notify_ended(phone, patient_name, machine_name, appt.public_token)
     elif et == "no_show":
         appt.status = ScanStatus.no_show
         if chat_id:
-            tg_scan.notify_no_show(chat_id, patient_name, appt.token)
-        sms.notify_no_show(phone, patient_name, appt.token)
+            tg_scan.notify_no_show(chat_id, patient_name, appt.token, appt.public_token)
+        sms.notify_no_show(phone, patient_name, appt.token, appt.public_token)
     else:
         raise HTTPException(400, f"Unknown event type: {et}")
 
@@ -1402,19 +1639,100 @@ def scan_event(body: ScanEventCreate, db: Session = Depends(get_db)):
         status=appt.status.value,
         started_at=appt.started_at,
         ended_at=appt.ended_at,
+        public_token=appt.public_token,
+    )
+
+
+@router.get("/v1/public/tickets/{public_token}", response_model=PublicTicketOut)
+def public_ticket_status(public_token: str, db: Session = Depends(get_db)):
+    """Public live queue status — no login, unguessable token only."""
+    from app.services.queue import current_serving_token
+
+    appt = db.execute(
+        select(Appointment).where(Appointment.public_token == public_token)
+    ).scalar_one_or_none()
+    if appt:
+        recompute_doctor_queue_etas(db, appt.doctor_id)
+        pred = db.execute(
+            select(Prediction).where(Prediction.appointment_id == appt.id)
+        ).scalar_one_or_none()
+        doctor = appt.doctor
+        slot = appt.slot or "morning"
+        pred_sec, _ = predict_duration_sec(db, appt.doctor_id, appt.age_band)
+        return PublicTicketOut(
+            kind="opd",
+            opd=EtaOut(
+                appointment_id=appt.id,
+                token=appt.token,
+                patient_name=appt.patient.name,
+                doctor_name=doctor.name if doctor else "",
+                status=appt.status.value,
+                patients_ahead=pred.patients_ahead if pred else 0,
+                wait_seconds=pred.wait_seconds if pred else 0,
+                eta_at=pred.eta_at if pred else None,
+                confidence_min=pred.confidence_min if pred else 10.0,
+                predicted_duration_sec=pred_sec,
+                current_token=current_serving_token(db, appt.doctor_id, slot),
+                slot=slot,
+                doctor_live=bool(doctor and doctor.is_live and (doctor.active_slot in (None, slot))),
+            ),
+        )
+
+    scan_appt = db.execute(
+        select(ScanAppointment).where(ScanAppointment.public_token == public_token)
+    ).scalar_one_or_none()
+    if not scan_appt:
+        raise HTTPException(404, "Ticket not found")
+    m = db.get(ScanMachine, scan_appt.machine_id)
+    if not m:
+        raise HTTPException(404, "Scan machine not found")
+    recompute_scan_queue_etas(db, scan_appt.machine_id)
+    pred = db.execute(
+        select(ScanPrediction).where(ScanPrediction.scan_appointment_id == scan_appt.id)
+    ).scalar_one_or_none()
+    return PublicTicketOut(
+        kind="scan",
+        scan=ScanEtaOut(
+            appointment_id=scan_appt.id,
+            token=scan_appt.token,
+            patient_name=scan_appt.patient.name,
+            machine_name=m.name,
+            scan_type=m.scan_type.value,
+            status=scan_appt.status.value,
+            patients_ahead=pred.patients_ahead if pred else 0,
+            wait_seconds=pred.wait_seconds if pred else 0,
+            eta_at=pred.eta_at if pred else None,
+            confidence_min=pred.confidence_min if pred else 5.0,
+            predicted_duration_sec=pred.predicted_duration_sec if pred else 0,
+        ),
     )
 
 
 @router.get("/v1/scans/appointments/{appointment_id}/eta", response_model=ScanEtaOut)
-def scan_eta(appointment_id: int, db: Session = Depends(get_db)):
+def scan_eta(
+    appointment_id: int,
+    principal: Principal = Depends(require_principal),
+    db: Session = Depends(get_db),
+):
     appt = db.get(ScanAppointment, appointment_id)
     if not appt:
         raise HTTPException(404, "Scan appointment not found")
+    m = db.get(ScanMachine, appt.machine_id)
+    if not m:
+        raise HTTPException(404, "Scan machine not found")
+    role = effective_role(principal)
+    if role == "patient" and principal.patient_id == appt.patient_id:
+        pass
+    elif can_operate_hospital(principal, m.hospital_id):
+        pass
+    elif principal.is_service or (principal.is_his and principal.hospital_id == m.hospital_id):
+        pass
+    else:
+        raise HTTPException(403, "No access to this scan appointment")
     recompute_scan_queue_etas(db, appt.machine_id)
     pred = db.execute(
         select(ScanPrediction).where(ScanPrediction.scan_appointment_id == appt.id)
     ).scalar_one_or_none()
-    m = db.get(ScanMachine, appt.machine_id)
     return ScanEtaOut(
         appointment_id=appt.id,
         token=appt.token,

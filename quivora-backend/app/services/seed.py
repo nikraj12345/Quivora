@@ -19,6 +19,7 @@ from app.models import (
     DoctorOpsEvent,
     DurationSample,
     Hospital,
+    HospitalApiKey,
     Patient,
     Prediction,
     QueueEvent,
@@ -29,6 +30,7 @@ from app.models import (
     ScanStatus,
     ScanType,
     TrainJob,
+    User,
 )
 from app.services.age_bands import age_to_band
 from app.services.availability import slot_scheduled_at, works_on_date
@@ -267,6 +269,8 @@ def seed_database(db: Session, reset: bool = True) -> Dict[str, Any]:
 
     if reset:
         # Full wipe — used only by explicit "Re-seed data" admin action
+        db.execute(delete(User))
+        db.execute(delete(HospitalApiKey))
         db.execute(delete(ScanPrediction))
         db.execute(delete(ScanDurationSample))
         db.execute(delete(ScanAppointment))

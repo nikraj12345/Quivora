@@ -7,6 +7,7 @@ import { Shell } from "@/components/Shell";
 import { api, Doctor, DoctorAvailability, Eta, Hospital, PatientRecord, ScanEta, ScanMachine } from "@/lib/api";
 import { formatSlotsList, slotLabel, slotShort, slotTime } from "@/lib/slots";
 import { PRIORITY_META, Priority, suggestPriority } from "@/lib/priority";
+import { useAuth } from "@/lib/auth";
 
 type Step = "hospital" | "patient" | "service" | "payment" | "confirm";
 type PaymentMethod = "upi" | "cash";
@@ -182,6 +183,7 @@ function StepBar({ current, includePayment }: { current: Step; includePayment: b
 
 function RegisterPageContent() {
   const searchParams = useSearchParams();
+  const { user } = useAuth();
   const prefillHospitalId = searchParams.get("hospital");
   const prefillDoctorId = searchParams.get("doctor");
   const prefillSource = searchParams.get("source");
@@ -213,7 +215,7 @@ function RegisterPageContent() {
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
 
   const [token, setToken]           = useState<number | null>(null);
-  const [apptId, setApptId]         = useState<number | null>(null);
+  const [ticketRef, setTicketRef]     = useState<string | null>(null);
   const [issuedEta, setIssuedEta]   = useState<Eta | ScanEta | null>(null);
   const [queuePreview, setQueuePreview] = useState<{ ahead: number; live: boolean } | null>(null);
   const [isScan, setIsScan]         = useState(false);
@@ -359,6 +361,12 @@ function RegisterPageContent() {
   const issueToken = async () => {
     setLoading(true); setError("");
     try {
+      const staffRoles = ["platform_admin", "hospital_admin", "hospital_staff", "doctor", "service"];
+      if (!user || !staffRoles.includes(user.role)) {
+        setError("Hospital staff must sign in to register patients and issue tokens.");
+        setLoading(false);
+        return;
+      }
       const name = patientName.trim();
       const age = patientAge;
       const mobile = digitsOnly(phone);
@@ -388,7 +396,7 @@ function RegisterPageContent() {
           priority: effective,
           priority_reason: priorityReason.trim() || (effective === "senior" ? "Age 60+ — senior priority" : undefined),
         });
-        setToken(a.token); setApptId(a.id); setIsScan(false);
+        setToken(a.token); setTicketRef(a.public_token); setIsScan(false);
         setIssuedPriority((a.priority as Priority) || effective);
         setPaymentRef(mockPaymentRef(a.id));
         try {
@@ -405,7 +413,7 @@ function RegisterPageContent() {
         }
       } else if (serviceType === "scan" && selMachine) {
         const a = await api.createScanAppointment({ machine_external_id: selMachine.external_id, patient_name: name, age });
-        setToken(a.token); setApptId(a.id); setIsScan(true);
+        setToken(a.token); setTicketRef(a.public_token); setIsScan(true);
         setIssuedPriority("normal");
         setPaymentRef(mockPaymentRef(a.id));
         try {
@@ -431,7 +439,7 @@ function RegisterPageContent() {
     if (!keepHospital) setSelHospital(null);
     setPhone("");
     resetPhoneState();
-    setSelDoctor(null); setSelMachine(null); setSelSlot(""); setToken(null); setApptId(null); setIssuedEta(null); setQueuePreview(null); setError("");
+    setSelDoctor(null); setSelMachine(null); setSelSlot(""); setToken(null); setTicketRef(null); setIssuedEta(null); setQueuePreview(null); setError("");
     setAppointmentDate(localDateString()); setAvailability(null);
     setVisitType("new"); setServiceType("doctor");
     setPriority("normal"); setPriorityReason(""); setIssuedPriority("normal");
@@ -835,7 +843,7 @@ function RegisterPageContent() {
                       Scan this demo QR with any UPI app. Token is already issued — payment is for billing only.
                     </p>
                     <div className="payment-qr-wrap">
-                      <MockPaymentQr seed={paymentRef || String(apptId || token)} />
+                      <MockPaymentQr seed={paymentRef || ticketRef || String(token)} />
                     </div>
                     <div className="payment-ref">Ref: {paymentRef}</div>
                     <button
@@ -964,16 +972,16 @@ function RegisterPageContent() {
 
                 <div style={{ marginTop: 16, padding: "12px 16px", background: "var(--surface-2)", borderRadius: 8, border: "1px solid var(--border)" }}>
                   <p style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>Patient view:</p>
-                  {apptId && (
-                    <Link href={`/my-ticket/${apptId}${isScan ? "?scan=1" : ""}`} style={{ fontSize: 13, color: "var(--accent)", fontWeight: 600 }}>
+                  {ticketRef && (
+                    <Link href={`/my-ticket/${ticketRef}`} style={{ fontSize: 13, color: "var(--accent)", fontWeight: 600 }}>
                       Open ticket →
                     </Link>
                   )}
                 </div>
 
                 <div style={{ display: "flex", gap: 10, marginTop: 20, justifyContent: "center" }}>
-                  {apptId && (
-                    <Link href={`/my-ticket/${apptId}${isScan ? "?scan=1" : ""}`} className="btn btn-primary">
+                  {ticketRef && (
+                    <Link href={`/my-ticket/${ticketRef}`} className="btn btn-primary">
                       Patient view
                     </Link>
                   )}

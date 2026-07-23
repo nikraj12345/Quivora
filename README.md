@@ -39,10 +39,13 @@ celery -A app.worker.celery_app.celery_app worker --loglevel=info --concurrency=
 ```bash
 cd quivora-frontend
 npm install
+cp .env.example .env.local   # set QUIVORA_API_BASE
 npm run dev
 ```
 
 Open http://localhost:3000
+
+The browser talks only to `/api/*` (Next.js BFF). JWT is stored in an **httpOnly cookie** — no `NEXT_PUBLIC_API_KEY` in the client.
 
 ## E2E tests
 

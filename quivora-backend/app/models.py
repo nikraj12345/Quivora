@@ -97,6 +97,14 @@ class TrainJobStatus(str, enum.Enum):
     failed = "failed"
 
 
+class UserRole(str, enum.Enum):
+    platform_admin = "platform_admin"
+    hospital_admin = "hospital_admin"
+    hospital_staff = "hospital_staff"
+    doctor = "doctor"
+    patient = "patient"
+
+
 class Hospital(Base):
     __tablename__ = "hospitals"
 
@@ -155,6 +163,7 @@ class Doctor(Base):
     delay_buffer_sec: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     consultation_fee: Mapped[int] = mapped_column(Integer, default=500, server_default="500")
     follow_up_fee: Mapped[int] = mapped_column(Integer, default=300, server_default="300")
+    room_pin_hash: Mapped[Optional[str]] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     hospital: Mapped[Hospital] = relationship(back_populates="doctors")
@@ -217,6 +226,7 @@ class Appointment(Base):
     priority: Mapped[str] = mapped_column(String(32), nullable=False, default="normal", server_default="normal")
     priority_reason: Mapped[Optional[str]] = mapped_column(String(300))
     telegram_chat_id: Mapped[Optional[str]] = mapped_column(String(64))
+    public_token: Mapped[str] = mapped_column(String(96), unique=True, nullable=False, index=True)
     scheduled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -319,6 +329,7 @@ class ScanAppointment(Base):
     age: Mapped[int] = mapped_column(Integer, nullable=False)
     age_band: Mapped[str] = mapped_column(String(32), nullable=False)
     telegram_chat_id: Mapped[Optional[str]] = mapped_column(String(64))
+    public_token: Mapped[str] = mapped_column(String(96), unique=True, nullable=False, index=True)
     status: Mapped[ScanStatus] = mapped_column(Enum(ScanStatus), default=ScanStatus.scheduled)
     scheduled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -383,3 +394,57 @@ class TrainJob(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class User(Base):
+    __tablename__ = "users"
+    __table_args__ = (UniqueConstraint("email"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    hospital_id: Mapped[Optional[int]] = mapped_column(ForeignKey("hospitals.id"))
+    doctor_id: Mapped[Optional[int]] = mapped_column(ForeignKey("doctors.id"))
+    patient_id: Mapped[Optional[int]] = mapped_column(ForeignKey("patients.id"))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    hospital: Mapped[Optional[Hospital]] = relationship()
+    doctor: Mapped[Optional[Doctor]] = relationship()
+    patient: Mapped[Optional[Patient]] = relationship()
+
+
+class HospitalApiKey(Base):
+    """Per-hospital HIS / server-to-server integration keys."""
+    __tablename__ = "hospital_api_keys"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    hospital_id: Mapped[int] = mapped_column(ForeignKey("hospitals.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False, default="HIS")
+    key_prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    hospital: Mapped[Hospital] = relationship()
+
+
+from sqlalchemy import event
+
+from app.services.public_tokens import generate_public_token
+
+
+@event.listens_for(Appointment, "before_insert")
+def _appointment_public_token(_mapper, _connection, target: Appointment) -> None:
+    if not target.public_token:
+        target.public_token = generate_public_token()
+
+
+@event.listens_for(ScanAppointment, "before_insert")
+def _scan_appointment_public_token(_mapper, _connection, target: ScanAppointment) -> None:
+    if not target.public_token:
+        target.public_token = generate_public_token()

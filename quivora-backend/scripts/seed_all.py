@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.db import SessionLocal
+from app.services.bootstrap_auth import ensure_bootstrap_users, ensure_doctor_room_pins, print_demo_credentials
 from app.services.seed import (
     CONSULTS_PER_DOCTOR,
     HISTORY_DAYS_FUTURE,
@@ -86,13 +87,16 @@ def main() -> int:
     db = SessionLocal()
     try:
         result = seed_database(db, reset=not args.no_reset)
+        ensure_doctor_room_pins(db)
+        ensure_bootstrap_users(db)
+        print(f"  hospitals            : {result['hospital']}")
+        print(f"  doctors              : {result['doctors']}")
+        print(f"  patients in DB       : {result['patients']}")
+        print(f"  patient pool         : {result.get('patient_pool', PATIENT_POOL_SIZE)}")
+        print()
+        print_demo_credentials(db)
     finally:
         db.close()
-
-    print(f"  hospitals            : {result['hospital']}")
-    print(f"  doctors              : {result['doctors']}")
-    print(f"  patients in DB       : {result['patients']}")
-    print(f"  patient pool         : {result.get('patient_pool', PATIENT_POOL_SIZE)}")
 
     if args.history:
         print(f"→ Seeding random consult history ({args.days_past}d past, {args.days_future}d future)…")

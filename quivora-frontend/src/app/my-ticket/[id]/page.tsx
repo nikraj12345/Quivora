@@ -6,6 +6,10 @@ import { api, Eta, ScanEta } from "@/lib/api";
 
 type Phase = "waiting" | "next" | "in_progress" | "done" | "no_show";
 
+function isPublicTicketRef(ref: string): boolean {
+  return !/^\d+$/.test(ref);
+}
+
 function getPhase(eta: Eta | ScanEta): Phase {
   if (eta.status === "completed") return "done";
   if (eta.status === "no_show") return "no_show";
@@ -36,9 +40,12 @@ const PHASE_LABEL: Record<Phase, string> = {
 export default function MyTicketPage() {
   const { id } = useParams();
   const searchParams = useSearchParams();
-  const isScan = searchParams.get("scan") === "1";
+  const ticketRef = String(id);
+  const legacyScan = searchParams.get("scan") === "1";
+  const isPublic = isPublicTicketRef(ticketRef);
 
   const [eta, setEta] = useState<Eta | ScanEta | null>(null);
+  const [isScan, setIsScan] = useState(legacyScan);
   const [prevAhead, setPrevAhead] = useState<number | null>(null);
   const [queueFlash, setQueueFlash] = useState(false);
   const [pulsing, setPulsing] = useState(false);
@@ -58,9 +65,24 @@ export default function MyTicketPage() {
   useEffect(() => {
     const load = async () => {
       try {
-        const data = isScan
-          ? await api.scanEta(Number(id))
-          : await api.eta(Number(id));
+        let data: Eta | ScanEta;
+        if (isPublic) {
+          const ticket = await api.publicTicket(ticketRef);
+          if (ticket.kind === "scan" && ticket.scan) {
+            data = ticket.scan;
+            setIsScan(true);
+          } else if (ticket.opd) {
+            data = ticket.opd;
+            setIsScan(false);
+          } else {
+            return;
+          }
+        } else {
+          data = legacyScan
+            ? await api.scanEta(Number(ticketRef))
+            : await api.eta(Number(ticketRef));
+          setIsScan(legacyScan);
+        }
         setEta((prev) => {
           if (prev && prev.patients_ahead !== data.patients_ahead) {
             setPrevAhead(prev.patients_ahead);
@@ -79,7 +101,7 @@ export default function MyTicketPage() {
     load();
     const t = setInterval(load, 5000);
     return () => clearInterval(t);
-  }, [id, isScan]);
+  }, [ticketRef, isPublic, legacyScan]);
 
   if (!eta) {
     return (
@@ -94,6 +116,7 @@ export default function MyTicketPage() {
   const serviceName = isScan
     ? (eta as ScanEta).machine_name
     : (eta as Eta).doctor_name;
+  const telegramStartRef = isPublic ? ticketRef : ticketRef;
 
   return (
     <div className={`ticket-page ticket-page--${phase}`}>
@@ -210,7 +233,7 @@ export default function MyTicketPage() {
         {telegramBot && phase === "waiting" && (
           <a
             className="ticket-telegram"
-            href={`https://t.me/${telegramBot}?start=${id}`}
+            href={`https://t.me/${telegramBot}?start=${telegramStartRef}`}
             target="_blank"
             rel="noopener noreferrer"
           >

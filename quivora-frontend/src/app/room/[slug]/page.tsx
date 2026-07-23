@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { Shell } from "@/components/Shell";
 import { DoctorLiveToggle } from "@/components/DoctorLiveToggle";
+import { DoctorRoomPinGate } from "@/components/DoctorRoomPinGate";
 import { api, Appointment, Doctor, DoctorDaySchedule, QueueItem } from "@/lib/api";
 import { formatAppointmentDate, localDateString } from "@/lib/dates";
 import { slotShort } from "@/lib/slots";
@@ -178,6 +179,7 @@ export default function RoomPage() {
   };
 
   return (
+    <DoctorRoomPinGate doctorRef={slug} doctorId={doctor?.id}>
     <Shell
       title={doctor?.name ?? "Room"}
       subtitle={doctor ? doctor.department : ""}
@@ -492,5 +494,6 @@ export default function RoomPage() {
         </div>
       )}
     </Shell>
+    </DoctorRoomPinGate>
   );
 }

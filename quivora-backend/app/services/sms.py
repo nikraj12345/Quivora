@@ -20,6 +20,7 @@ from typing import Optional
 import httpx
 
 from app.config import settings
+from app.services.public_tokens import ticket_track_url
 
 log = logging.getLogger("quivora.sms")
 
@@ -133,6 +134,13 @@ def phone_from_patient(patient) -> Optional[str]:
     return getattr(patient, "phone", None)
 
 
+def _track_suffix(public_token: Optional[str] = None) -> str:
+    url = ticket_track_url(public_token)
+    if not url:
+        return ""
+    return f" Track live: {url}"
+
+
 # ── Notification helpers (plain text, SMS-safe) ─────────────────────────────
 
 def notify_booked(
@@ -147,6 +155,7 @@ def notify_booked(
     eta_time: Optional[str] = None,
     doctor_live: bool = False,
     sync: bool = False,
+    public_token: Optional[str] = None,
 ):
     """Registration confirmation SMS with live queue context."""
     parts = [
@@ -166,8 +175,9 @@ def notify_booked(
             parts.append(f"Expected ~{eta_time}.")
     elif not doctor_live:
         parts.append("ETA starts when doctor goes live.")
-    parts.append("We'll SMS again when you're next. Track live on your ticket link.")
-    return send_sms(phone, " ".join(parts), sync=sync)
+    parts.append("We'll SMS again when you're next.")
+    parts.append(_track_suffix(public_token).lstrip())
+    return send_sms(phone, " ".join(p for p in parts if p), sync=sync)
 
 
 def notify_almost_next(
@@ -178,6 +188,7 @@ def notify_almost_next(
     eta_time: Optional[str] = None,
     current_token: Optional[int] = None,
     wait_seconds: Optional[int] = None,
+    public_token: Optional[str] = None,
 ):
     bits = [f"Quivora: {patient_name}, almost next! Your token #{token} at {service}."]
     if current_token is not None:
@@ -187,7 +198,8 @@ def notify_almost_next(
         bits.append(f"Est. wait ~{max(1, round(wait_seconds / 60))} min.")
     if eta_time:
         bits.append(f"Expected ~{eta_time}.")
-    send_sms(phone, " ".join(bits))
+    bits.append(_track_suffix(public_token).lstrip())
+    send_sms(phone, " ".join(p for p in bits if p))
 
 
 def notify_next(
@@ -198,27 +210,35 @@ def notify_next(
     eta_time: Optional[str] = None,
     current_token: Optional[int] = None,
     wait_seconds: Optional[int] = None,
+    public_token: Optional[str] = None,
 ):
     bits = [f"Quivora: {patient_name}, you're NEXT! Token #{token} at {service}. Please proceed."]
     if current_token is not None:
         bits.append(f"Now serving #{current_token}.")
     if eta_time:
         bits.append(f"Expected ~{eta_time}.")
-    send_sms(phone, " ".join(bits))
+    bits.append(_track_suffix(public_token).lstrip())
+    send_sms(phone, " ".join(p for p in bits if p))
 
 
-def notify_started(phone: Optional[str], patient_name: str, token: int, service: str):
-    msg = f"Quivora: {patient_name}, consultation started for token #{token} ({service})."
+def notify_started(
+    phone: Optional[str],
+    patient_name: str,
+    token: int,
+    service: str,
+    public_token: Optional[str] = None,
+):
+    msg = f"Quivora: {patient_name}, consultation started for token #{token} ({service}).{_track_suffix(public_token)}"
     send_sms(phone, msg)
 
 
-def notify_ended(phone: Optional[str], patient_name: str, service: str):
-    msg = f"Quivora: {patient_name}, consultation complete at {service}. Thank you!"
+def notify_ended(phone: Optional[str], patient_name: str, service: str, public_token: Optional[str] = None):
+    msg = f"Quivora: {patient_name}, consultation complete at {service}. Thank you!{_track_suffix(public_token)}"
     send_sms(phone, msg)
 
 
-def notify_no_show(phone: Optional[str], patient_name: str, token: int):
-    msg = f"Quivora: {patient_name}, token #{token} marked no-show. Visit reception if needed."
+def notify_no_show(phone: Optional[str], patient_name: str, token: int, public_token: Optional[str] = None):
+    msg = f"Quivora: {patient_name}, token #{token} marked no-show. Visit reception if needed.{_track_suffix(public_token)}"
     send_sms(phone, msg)
 
 
@@ -230,10 +250,11 @@ def notify_doctor_live(
     eta_time: str,
     confidence_min: float,
     patients_ahead: int,
+    public_token: Optional[str] = None,
 ):
     msg = (
         f"Quivora: {patient_name}, doctor is LIVE for {service}. "
-        f"Token #{token}, {patients_ahead} ahead, ETA ~{eta_time}."
+        f"Token #{token}, {patients_ahead} ahead, ETA ~{eta_time}.{_track_suffix(public_token)}"
     )
     send_sms(phone, msg)
 
@@ -246,16 +267,23 @@ def notify_scan_live(
     eta_time: str,
     confidence_min: float,
     patients_ahead: int,
+    public_token: Optional[str] = None,
 ):
     msg = (
         f"Quivora: {patient_name}, scan queue LIVE at {service}. "
-        f"Token #{token}, {patients_ahead} ahead, ETA ~{eta_time}."
+        f"Token #{token}, {patients_ahead} ahead, ETA ~{eta_time}.{_track_suffix(public_token)}"
     )
     send_sms(phone, msg)
 
 
-def notify_break_started(phone: Optional[str], patient_name: str, token: int, doctor_name: str):
-    msg = f"Quivora: {patient_name}, {doctor_name} is on a short break. Token #{token} — hang tight."
+def notify_break_started(
+    phone: Optional[str],
+    patient_name: str,
+    token: int,
+    doctor_name: str,
+    public_token: Optional[str] = None,
+):
+    msg = f"Quivora: {patient_name}, {doctor_name} is on a short break. Token #{token} — hang tight.{_track_suffix(public_token)}"
     send_sms(phone, msg)
 
 
@@ -265,9 +293,10 @@ def notify_break_ended(
     token: int,
     doctor_name: str,
     eta_time: Optional[str] = None,
+    public_token: Optional[str] = None,
 ):
     eta = f" New ETA ~{eta_time}." if eta_time else ""
-    msg = f"Quivora: {patient_name}, {doctor_name} is back. Token #{token}.{eta}"
+    msg = f"Quivora: {patient_name}, {doctor_name} is back. Token #{token}.{eta}{_track_suffix(public_token)}"
     send_sms(phone, msg)
 
 
@@ -278,10 +307,11 @@ def notify_running_late(
     doctor_name: str,
     minutes: int,
     eta_time: Optional[str] = None,
+    public_token: Optional[str] = None,
 ):
     eta = f" New ETA ~{eta_time}." if eta_time else ""
     msg = (
         f"Quivora: {patient_name}, {doctor_name} running ~{minutes} min late. "
-        f"Token #{token}.{eta}"
+        f"Token #{token}.{eta}{_track_suffix(public_token)}"
     )
     send_sms(phone, msg)

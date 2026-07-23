@@ -5,15 +5,20 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
+from app.api.auth_routes import router as auth_router
 from app.config import settings
-from app.db import Base, engine
+from app.db import Base, engine, SessionLocal
 from app.db_migrate import ensure_schema
+from app.services.bootstrap_auth import ensure_bootstrap_users, ensure_doctor_room_pins
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     ensure_schema()
+    with SessionLocal() as db:
+        ensure_doctor_room_pins(db)
+        ensure_bootstrap_users(db)
 
     # Start Telegram bot polling if token is configured
     tg_task = None
@@ -42,3 +47,4 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(auth_router)

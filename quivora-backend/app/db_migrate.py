@@ -1,8 +1,16 @@
 """Lightweight column sync for dev — add new columns without Alembic."""
 
-from sqlalchemy import inspect, text
+import secrets
+import uuid
 
-from app.db import engine
+from sqlalchemy import inspect, select, text
+
+from app.db import SessionLocal, engine
+from app.services.public_tokens import generate_public_token
+
+
+def _new_public_token() -> str:
+    return generate_public_token()
 
 
 def ensure_hospital_columns() -> None:
@@ -31,6 +39,7 @@ def ensure_doctor_columns() -> None:
         ("queue_epoch_at", "TIMESTAMP WITH TIME ZONE"),
         ("consultation_fee", "INTEGER DEFAULT 500"),
         ("follow_up_fee", "INTEGER DEFAULT 300"),
+        ("room_pin_hash", "VARCHAR(255)"),
     ]
     with engine.begin() as conn:
         for col, typedef in alters:
@@ -51,11 +60,27 @@ def ensure_appointment_columns() -> None:
     alters = [
         ("priority", "VARCHAR(32) DEFAULT 'normal'"),
         ("priority_reason", "VARCHAR(300)"),
+        ("public_token", "VARCHAR(96)"),
     ]
     with engine.begin() as conn:
         for col, typedef in alters:
             if col not in existing:
                 conn.execute(text(f"ALTER TABLE appointments ADD COLUMN {col} {typedef}"))
+
+    if "public_token" not in existing:
+        with SessionLocal() as db:
+            from app.models import Appointment
+            rows = db.execute(select(Appointment).where(Appointment.public_token.is_(None))).scalars().all()
+            for row in rows:
+                row.public_token = _new_public_token()
+            if rows:
+                db.commit()
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE appointments ALTER COLUMN public_token SET NOT NULL"))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_appointments_public_token "
+                "ON appointments (public_token)"
+            ))
 
     if "events" in insp.get_table_names():
         ev_cols = {c["name"]: c for c in insp.get_columns("events")}
@@ -90,8 +115,34 @@ def ensure_patient_columns() -> None:
                 conn.execute(text(f"ALTER TABLE patients ADD COLUMN {col} {typedef}"))
 
 
+def ensure_scan_appointment_columns() -> None:
+    insp = inspect(engine)
+    if "scan_appointments" not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns("scan_appointments")}
+    if "public_token" not in existing:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE scan_appointments ADD COLUMN public_token VARCHAR(96)"))
+        with SessionLocal() as db:
+            from app.models import ScanAppointment
+            rows = db.execute(
+                select(ScanAppointment).where(ScanAppointment.public_token.is_(None))
+            ).scalars().all()
+            for row in rows:
+                row.public_token = _new_public_token()
+            if rows:
+                db.commit()
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE scan_appointments ALTER COLUMN public_token SET NOT NULL"))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_scan_appointments_public_token "
+                "ON scan_appointments (public_token)"
+            ))
+
+
 def ensure_schema() -> None:
     ensure_hospital_columns()
     ensure_doctor_columns()
     ensure_appointment_columns()
+    ensure_scan_appointment_columns()
     ensure_patient_columns()

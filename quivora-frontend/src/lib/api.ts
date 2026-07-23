@@ -1,11 +1,16 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8100";
-const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "quivora-dev-key";
+const API_BASE = "/api";
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  headers.set("Content-Type", "application/json");
-  if (!headers.has("X-API-Key")) headers.set("X-API-Key", API_KEY);
-  const res = await fetch(`${API_BASE}${path}`, { ...init, headers, cache: "no-store" });
+  if (!headers.has("Content-Type") && init.body) {
+    headers.set("Content-Type", "application/json");
+  }
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers,
+    cache: "no-store",
+    credentials: "include",
+  });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || res.statusText);
@@ -164,6 +169,7 @@ export type Appointment = {
   scheduled_at?: string | null;
   started_at?: string | null;
   ended_at?: string | null;
+  public_token: string;
 };
 
 export type SlotAvailability = {
@@ -390,6 +396,7 @@ export type ScanAppointment = {
   status: string;
   started_at?: string | null;
   ended_at?: string | null;
+  public_token: string;
 };
 
 export type ScanEta = {
@@ -510,7 +517,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  qrPngUrl: (ref: string | number) => `${API_BASE}/v1/hospitals/${ref}/qr.png`,
+  qrPngUrl: (ref: string | number) => `/api/v1/hospitals/${ref}/qr.png`,
   setPriority: (appointment_id: number, priority: string, reason: string) =>
     request<Appointment>(`/v1/appointments/${appointment_id}/priority`, {
       method: "PATCH",
@@ -535,6 +542,10 @@ export const api = {
       }`
     ),
   eta: (appointmentId: number) => request<Eta>(`/v1/appointments/${appointmentId}/eta`),
+  publicTicket: (publicToken: string) =>
+    request<{ kind: "opd" | "scan"; opd?: Eta; scan?: ScanEta }>(
+      `/v1/public/tickets/${encodeURIComponent(publicToken)}`
+    ),
   appointment: (id: number) => request<Appointment>(`/v1/appointments/${id}`),
   // Scan queue
   scanMachines: (hospital_id?: number) => request<ScanMachine[]>(`/v1/scans/machines${hospital_id ? `?hospital_id=${hospital_id}` : ""}`),

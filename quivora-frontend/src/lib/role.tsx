@@ -1,7 +1,8 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, ReactNode } from "react";
-import { api, Doctor, Hospital, PatientRecord } from "@/lib/api";
+import { api, Doctor, Hospital } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 
 export type RoleMode = "admin" | "hospital" | "doctor" | "patient";
 
@@ -9,16 +10,14 @@ type RoleState = {
   mode: RoleMode;
   hospitalId: number | null;
   hospital: Hospital | null;
-  patientId: number | null;
-  patient: PatientRecord | null;
   doctorId: number | null;
   doctor: Doctor | null;
   hospitals: Hospital[];
-  patients: PatientRecord[];
   doctors: Doctor[];
+  lockedHospitalId: number | null;
+  lockedDoctorId: number | null;
   setMode: (m: RoleMode) => void;
   setHospitalId: (id: number | null) => void;
-  setPatientId: (id: number | null) => void;
   setDoctorId: (id: number | null) => void;
   refresh: () => Promise<void>;
 };
@@ -26,15 +25,25 @@ type RoleState = {
 const RoleContext = createContext<RoleState | null>(null);
 const STORAGE_KEY = "quivora.role.v1";
 
+function defaultModeForRole(role: string | undefined): RoleMode {
+  if (role === "platform_admin") return "admin";
+  if (role === "doctor") return "doctor";
+  if (role === "patient") return "patient";
+  return "hospital";
+}
+
 export function RoleProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
   const [mode, setModeState] = useState<RoleMode>("hospital");
   const [hospitalId, setHospitalIdState] = useState<number | null>(null);
-  const [patientId, setPatientIdState] = useState<number | null>(null);
   const [doctorId, setDoctorIdState] = useState<number | null>(null);
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
-  const [patients, setPatients] = useState<PatientRecord[]>([]);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [hydrated, setHydrated] = useState(false);
+
+  const isPlatformAdmin = user?.role === "platform_admin";
+  const lockedHospitalId = !isPlatformAdmin && user?.hospital_id != null ? user.hospital_id : null;
+  const lockedDoctorId = user?.role === "doctor" && user.doctor_id != null ? user.doctor_id : null;
 
   useEffect(() => {
     try {
@@ -43,7 +52,6 @@ export function RoleProvider({ children }: { children: ReactNode }) {
         const parsed = JSON.parse(raw);
         if (parsed.mode) setModeState(parsed.mode);
         if (parsed.hospitalId) setHospitalIdState(parsed.hospitalId);
-        if (parsed.patientId) setPatientIdState(parsed.patientId);
         if (parsed.doctorId) setDoctorIdState(parsed.doctorId);
       }
     } catch { /* ignore */ }
@@ -51,74 +59,99 @@ export function RoleProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (!user) return;
+    if (mode === "admin" && !isPlatformAdmin) {
+      setModeState(defaultModeForRole(user.role));
+    }
+    if (lockedHospitalId != null) {
+      setHospitalIdState(lockedHospitalId);
+    }
+    if (lockedDoctorId != null) {
+      setDoctorIdState(lockedDoctorId);
+    }
+  }, [user, mode, isPlatformAdmin, lockedHospitalId, lockedDoctorId]);
+
+  useEffect(() => {
     if (!hydrated) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ mode, hospitalId, patientId, doctorId }));
-  }, [mode, hospitalId, patientId, doctorId, hydrated]);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ mode, hospitalId, doctorId }));
+  }, [mode, hospitalId, doctorId, hydrated]);
 
   const refresh = useCallback(async () => {
     const hs = await api.hospitals();
-    setHospitals(hs);
-    // After reseed, old hospital IDs in localStorage no longer exist — fall back.
-    const stillValid = hospitalId != null && hs.some((h) => h.id === hospitalId);
-    const hid = stillValid ? hospitalId : (hs[0]?.id ?? null);
+    const visible = lockedHospitalId != null ? hs.filter((h) => h.id === lockedHospitalId) : hs;
+    setHospitals(visible);
+    const stillValid = hospitalId != null && visible.some((h) => h.id === hospitalId);
+    const hid = lockedHospitalId ?? (stillValid ? hospitalId : visible[0]?.id ?? null);
     if (hid !== hospitalId) setHospitalIdState(hid);
-    if (hid) {
-      const [ps, ds] = await Promise.all([api.patients(hid), api.doctors(hid)]);
-      setPatients(ps);
+    if (!hid) {
+      setDoctors([]);
+      if (lockedDoctorId == null) setDoctorIdState(null);
+      return;
+    }
+    try {
+      const ds = await api.doctors(hid);
       setDoctors(ds);
-      if (doctorId != null && !ds.some((doctor) => doctor.id === doctorId)) {
+      if (lockedDoctorId != null) {
+        setDoctorIdState(lockedDoctorId);
+      } else if (doctorId != null && !ds.some((item) => item.id === doctorId)) {
         setDoctorIdState(ds[0]?.id ?? null);
       }
-    } else {
-      setPatients([]);
+    } catch {
       setDoctors([]);
-      setDoctorIdState(null);
     }
-  }, [hospitalId, doctorId]);
+  }, [hospitalId, doctorId, lockedHospitalId, lockedDoctorId]);
 
   useEffect(() => {
     if (!hydrated) return;
     refresh().catch(() => {});
-  }, [hydrated, refresh]);
+  }, [hydrated, refresh, user?.id]);
 
   useEffect(() => {
     if (!hospitalId) return;
-    Promise.all([api.patients(hospitalId), api.doctors(hospitalId)])
-      .then(([ps, ds]) => {
-        setPatients(ps);
+    let cancelled = false;
+    api.doctors(hospitalId)
+      .then((ds) => {
+        if (cancelled) return;
         setDoctors(ds);
-        if (doctorId != null && !ds.some((doctor) => doctor.id === doctorId)) {
+        if (lockedDoctorId != null) {
+          setDoctorIdState(lockedDoctorId);
+        } else if (doctorId != null && !ds.some((item) => item.id === doctorId)) {
           setDoctorIdState(ds[0]?.id ?? null);
         }
       })
       .catch(() => {
-        setPatients([]);
-        setDoctors([]);
+        if (!cancelled) setDoctors([]);
       });
-  }, [hospitalId, doctorId]);
+    return () => { cancelled = true; };
+  }, [hospitalId, doctorId, lockedDoctorId]);
 
   const hospital = useMemo(
     () => hospitals.find((h) => h.id === hospitalId) || null,
     [hospitals, hospitalId]
-  );
-  const patient = useMemo(
-    () => patients.find((p) => p.id === patientId) || null,
-    [patients, patientId]
   );
   const doctor = useMemo(
     () => doctors.find((d) => d.id === doctorId) || null,
     [doctors, doctorId]
   );
 
-  const setMode = (m: RoleMode) => setModeState(m);
-  const setHospitalId = (id: number | null) => setHospitalIdState(id);
-  const setPatientId = (id: number | null) => setPatientIdState(id);
-  const setDoctorId = (id: number | null) => setDoctorIdState(id);
+  const setMode = (m: RoleMode) => {
+    if (m === "admin" && !isPlatformAdmin) return;
+    setModeState(m);
+  };
+  const setHospitalId = (id: number | null) => {
+    if (lockedHospitalId != null && id !== lockedHospitalId) return;
+    setHospitalIdState(id);
+  };
+  const setDoctorId = (id: number | null) => {
+    if (lockedDoctorId != null && id !== lockedDoctorId) return;
+    setDoctorIdState(id);
+  };
 
   const value: RoleState = {
-    mode, hospitalId, hospital, patientId, patient, doctorId, doctor,
-    hospitals, patients, doctors,
-    setMode, setHospitalId, setPatientId, setDoctorId, refresh,
+    mode, hospitalId, hospital, doctorId, doctor,
+    hospitals, doctors,
+    lockedHospitalId, lockedDoctorId,
+    setMode, setHospitalId, setDoctorId, refresh,
   };
 
   return <RoleContext.Provider value={value}>{children}</RoleContext.Provider>;

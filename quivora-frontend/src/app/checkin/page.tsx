@@ -27,7 +27,7 @@ function CheckinInner() {
   const [selDoctor, setSelDoctor] = useState<Doctor | null>(null);
   const [selSlot, setSelSlot] = useState("");
   const [token, setToken] = useState<number | null>(null);
-  const [apptId, setApptId] = useState<number | null>(null);
+  const [ticketRef, setTicketRef] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -104,7 +104,7 @@ function CheckinInner() {
       });
       setPatient(result.patient);
       setToken(result.appointment.token);
-      setApptId(result.appointment.id);
+      setTicketRef(result.appointment.public_token);
       setStep("done");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Booking failed");
@@ -260,8 +260,8 @@ function CheckinInner() {
               SMS updates will go to {digitsOnly(phone)}
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 20, justifyContent: "center" }}>
-              {apptId && (
-                <Link href={`/my-ticket/${apptId}`} className="btn btn-primary">
+              {ticketRef && (
+                <Link href={`/my-ticket/${ticketRef}`} className="btn btn-primary">
                   Track wait →
                 </Link>
               )}
@@ -275,7 +275,7 @@ function CheckinInner() {
                   setAge(30);
                   setSelDoctor(null);
                   setToken(null);
-                  setApptId(null);
+                  setTicketRef(null);
                   setError("");
                 }}
               >

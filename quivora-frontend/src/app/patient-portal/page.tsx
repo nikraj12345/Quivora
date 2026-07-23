@@ -5,10 +5,12 @@ import { useEffect, useState } from "react";
 import { Shell } from "@/components/Shell";
 import { api, Doctor } from "@/lib/api";
 import { useRole } from "@/lib/role";
+import { useAuth } from "@/lib/auth";
 import { formatSlotsList, slotShort } from "@/lib/slots";
 
 export default function PatientPortalPage() {
-  const { hospital, patient, setMode, hospitalId } = useRole();
+  const { hospital, hospitalId, setMode } = useRole();
+  const { user } = useAuth();
   const [doctors, setDoctors] = useState<Doctor[]>([]);
 
   useEffect(() => {
@@ -22,28 +24,34 @@ export default function PatientPortalPage() {
 
   const available = doctors.filter((d) => d.is_available);
   const bookHref = hospitalId ? `/register?hospital=${hospitalId}&source=patient` : "/register";
+  const signedIn = user?.role === "patient";
 
   return (
-    <Shell title="Home" subtitle={hospital ? hospital.name : "Pick a hospital from the switcher"}>
-      {!patient ? (
+    <Shell
+      title="Home"
+      subtitle={hospital?.name || user?.hospital_name || "Your care portal"}
+    >
+      {!signedIn ? (
         <div className="portal-hero">
-          <h2>Sign in as a patient</h2>
+          <h2>Patient portal</h2>
           <p>
-            Use the top-right switcher → Patient → pick your hospital and name.
-            Or book a new visit without signing in.
+            Sign in with your phone OTP at check-in, or book a visit without an account.
           </p>
-          <Link href={bookHref} className="btn btn-primary">
-            Book / register
-          </Link>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Link href="/checkin" className="btn btn-secondary">
+              Sign in with phone
+            </Link>
+            <Link href={bookHref} className="btn btn-primary">
+              Book / register
+            </Link>
+          </div>
         </div>
       ) : (
         <>
           <div className="portal-hero">
-            <h2>{patient.name}</h2>
+            <h2>{user.name}</h2>
             <p>
-              Age {patient.age}
-              {patient.phone ? ` · ${patient.phone}` : ""}
-              {hospital ? ` · ${hospital.name}` : ""}
+              {hospital?.name || user.hospital_name || "Your hospital"}
             </p>
             <Link href={bookHref} className="btn btn-primary">
               Book a visit

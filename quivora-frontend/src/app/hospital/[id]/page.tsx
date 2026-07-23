@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { Shell } from "@/components/Shell";
 import { api, Department, Doctor, Hospital } from "@/lib/api";
@@ -48,7 +48,8 @@ function HospitalQrSamples({ hospitalId }: { hospitalId: number }) {
 
 export default function HospitalConsolePage() {
   const { id } = useParams() as { id: string };
-  const { setMode, setHospitalId, refresh } = useRole();
+  const router = useRouter();
+  const { setMode, setHospitalId, refresh, lockedHospitalId } = useRole();
   const [hospital, setHospital] = useState<Hospital | null>(null);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
@@ -67,6 +68,10 @@ export default function HospitalConsolePage() {
   const [savingDept, setSavingDept] = useState(false);
 
   const load = useCallback(async () => {
+    if (lockedHospitalId != null && String(lockedHospitalId) !== id) {
+      router.replace(`/hospital/${lockedHospitalId}`);
+      return;
+    }
     const h = await api.hospital(id);
     setHospital(h);
     setHospitalId(h.id);
@@ -78,9 +83,19 @@ export default function HospitalConsolePage() {
       if (prev && depts.some((d) => d.name === prev)) return prev;
       return depts[0]?.name || "";
     });
-  }, [id, setHospitalId, setMode]);
+  }, [id, setHospitalId, setMode, lockedHospitalId, router]);
 
   useEffect(() => { load().catch((e) => setMsg(String(e))); }, [load]);
+
+  if (lockedHospitalId != null && String(lockedHospitalId) !== id) {
+    return (
+      <Shell title="Hospital Console">
+        <div className="card" style={{ padding: 24 }}>
+          <p style={{ color: "var(--muted)" }}>Redirecting to your hospital…</p>
+        </div>
+      </Shell>
+    );
+  }
 
   const toggleSlot = (s: string) => {
     setSlots((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));

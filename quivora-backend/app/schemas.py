@@ -136,6 +136,7 @@ class AppointmentOut(BaseModel):
     scheduled_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
+    public_token: str
 
     class Config:
         from_attributes = True
@@ -419,6 +420,7 @@ class ScanAppointmentOut(BaseModel):
     status: str
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
+    public_token: str
 
     class Config:
         from_attributes = True
@@ -449,6 +451,94 @@ class ScanEtaOut(BaseModel):
     predicted_duration_sec: int
 
 
+class PublicTicketOut(BaseModel):
+    kind: str  # opd | scan
+    opd: Optional[EtaOut] = None
+    scan: Optional[ScanEtaOut] = None
+
+
 class ScanEventCreate(BaseModel):
     appointment_id: int
     event_type: str  # arrived | scan_started | scan_ended | no_show
+
+
+class AuthLoginIn(BaseModel):
+    email: str
+    password: str
+
+
+class UserOut(BaseModel):
+    id: int
+    email: Optional[str] = None
+    name: str
+    role: str
+    hospital_id: Optional[int] = None
+    doctor_id: Optional[int] = None
+    patient_id: Optional[int] = None
+    is_active: bool = True
+
+    class Config:
+        from_attributes = True
+
+
+class AuthMeOut(BaseModel):
+    id: int
+    email: Optional[str] = None
+    name: str
+    role: str
+    hospital_id: Optional[int] = None
+    hospital_name: Optional[str] = None
+    doctor_id: Optional[int] = None
+    doctor_name: Optional[str] = None
+    patient_id: Optional[int] = None
+    auth_kind: str = "user"
+
+
+class TokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserOut
+
+
+class UserCreateIn(BaseModel):
+    email: str
+    password: str
+    name: str
+    role: str
+    hospital_id: Optional[int] = None
+    doctor_id: Optional[int] = None
+    patient_id: Optional[int] = None
+
+
+class DoctorRoomLoginIn(BaseModel):
+    doctor_ref: str
+    pin: str = Field(min_length=4, max_length=8)
+
+
+class PatientOtpRequestIn(BaseModel):
+    phone: str
+    hospital_id: int
+
+
+class PatientOtpVerifyIn(BaseModel):
+    phone: str
+    hospital_id: int
+    code: str = Field(min_length=4, max_length=8)
+
+
+class HospitalApiKeyOut(BaseModel):
+    id: int
+    hospital_id: int
+    name: str
+    key_prefix: str
+    is_active: bool
+    created_at: datetime
+    last_used_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class HospitalApiKeyCreateOut(HospitalApiKeyOut):
+    api_key: str
+

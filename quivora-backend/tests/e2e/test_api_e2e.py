@@ -49,8 +49,8 @@ def test_seed_doctors_and_patients(client: httpx.Client):
     assert len(hospitals) == 5
     assert all(h["name"] and h["city"] for h in hospitals)
 
-    # 40 doctors total, 8 per hospital
-    docs = client.get("/v1/doctors").json()
+    # 40 doctors total, 8 per hospital (service key can list all)
+    docs = client.get("/v1/doctors", headers=HEADERS).json()
     assert len(docs) == 40
     assert all(d["name"] for d in docs)
 
@@ -60,7 +60,7 @@ def test_seed_doctors_and_patients(client: httpx.Client):
     assert len(scoped) == 8
 
     # patient search
-    search = client.get(f"/v1/patients/search?q=a&hospital_id={first_hospital_id}").json()
+    search = client.get(f"/v1/patients/search?q=a&hospital_id={first_hospital_id}", headers=HEADERS).json()
     assert isinstance(search, list)
 
 
@@ -69,13 +69,13 @@ def test_opd_summary_can_be_scoped_to_hospital(client: httpx.Client):
     hospital_id = hospitals[0]["id"]
     doctors = client.get(f"/v1/doctors?hospital_id={hospital_id}").json()
 
-    scoped = client.get(f"/v1/opd/summary?hospital_id={hospital_id}")
+    scoped = client.get(f"/v1/opd/summary?hospital_id={hospital_id}", headers=HEADERS)
     assert scoped.status_code == 200
     body = scoped.json()
     assert body["total_doctors"] == len(doctors)
     assert body["live_doctors"] <= body["total_doctors"]
 
-    global_summary = client.get("/v1/opd/summary").json()
+    global_summary = client.get("/v1/opd/summary", headers=HEADERS).json()
     assert global_summary["total_doctors"] >= body["total_doctors"]
 
 
@@ -89,7 +89,7 @@ def test_bootstrap_training_100_per_doctor(client: httpx.Client):
     # wait for completion (fast mode)
     status = None
     for _ in range(180):
-        s = client.get(f"/v1/train/status/{job_id}")
+        s = client.get(f"/v1/train/status/{job_id}", headers=HEADERS)
         assert s.status_code == 200
         status = s.json()
         if status["status"] in ("completed", "failed"):
@@ -101,14 +101,14 @@ def test_bootstrap_training_100_per_doctor(client: httpx.Client):
     assert status["samples_done"] == 4000   # 100 per doctor × 40 doctors
     assert status["progress_pct"] == 100.0
 
-    stats = client.get("/v1/train/stats").json()
+    stats = client.get("/v1/train/stats", headers=HEADERS).json()
     assert stats["total_samples"] >= 4000   # 100 × 40 doctors
     for d in stats["doctors"]:
         assert d["sample_count"] >= 100, d
 
 
 def test_appointment_flow_and_eta(client: httpx.Client):
-    docs = client.get("/v1/doctors").json()
+    docs = client.get("/v1/doctors", headers=HEADERS).json()
     doctor = docs[0]
 
     # doctor must be live for ETAs to compute
@@ -142,7 +142,7 @@ def test_appointment_flow_and_eta(client: httpx.Client):
     )
     assert r.status_code == 200
 
-    eta_before = client.get(f"/v1/appointments/{second['id']}/eta").json()
+    eta_before = client.get(f"/v1/appointments/{second['id']}/eta", headers=HEADERS).json()
     assert eta_before["patients_ahead"] >= 1
     assert eta_before["wait_seconds"] > 0
     assert eta_before["eta_at"] is not None
@@ -157,10 +157,10 @@ def test_appointment_flow_and_eta(client: httpx.Client):
     assert r.status_code == 200
     assert r.json()["status"] == "completed"
 
-    eta_after = client.get(f"/v1/appointments/{second['id']}/eta").json()
+    eta_after = client.get(f"/v1/appointments/{second['id']}/eta", headers=HEADERS).json()
     assert eta_after["patients_ahead"] >= 0
 
-    queue = client.get(f"/v1/doctors/{doctor['id']}/queue").json()
+    queue = client.get(f"/v1/doctors/{doctor['id']}/queue", headers=HEADERS).json()
     assert isinstance(queue, list)
     assert all("predicted_duration_sec" in q for q in queue)
 
@@ -170,7 +170,7 @@ def test_scan_queue_flow(client: httpx.Client):
     client.post("/v1/admin/seed?reset=true", headers=HEADERS)
 
     # list machines
-    r = client.get("/v1/scans/machines")
+    r = client.get("/v1/scans/machines", headers=HEADERS)
     assert r.status_code == 200, r.text
     machines = r.json()
     assert len(machines) == 25   # 5 machines × 5 hospitals
@@ -198,7 +198,7 @@ def test_scan_queue_flow(client: httpx.Client):
         appts.append(r.json())
 
     # check queue
-    q = client.get(f"/v1/scans/machines/{ext}/queue").json()
+    q = client.get(f"/v1/scans/machines/{ext}/queue", headers=HEADERS).json()
     assert len(q) == 2
     assert all("predicted_duration_sec" in item for item in q)
     assert all(item["eta_at"] is not None for item in q)
@@ -216,12 +216,12 @@ def test_scan_queue_flow(client: httpx.Client):
     assert r.json()["status"] == "completed"
 
     # ETA for second patient should update
-    eta = client.get(f"/v1/scans/appointments/{appts[1]['id']}/eta").json()
+    eta = client.get(f"/v1/scans/appointments/{appts[1]['id']}/eta", headers=HEADERS).json()
     assert eta["patients_ahead"] >= 0
     assert eta["predicted_duration_sec"] > 0
 
     # check bootstrap samples were seeded
-    m_detail = client.get(f"/v1/scans/machines/{ext}").json()
+    m_detail = client.get(f"/v1/scans/machines/{ext}", headers=HEADERS).json()
     assert m_detail["sample_count"] >= 100
 
 

@@ -207,20 +207,22 @@ def recompute_doctor_queue_etas(db: Session, doctor_id: int) -> None:
                     serving = current_serving_token(db, doctor.id, slot) if doctor else None
                     wait_sec = int(eta_wait) if eta_wait is not None else None
                     if appt.telegram_chat_id:
-                        notify_almost_next(appt.telegram_chat_id, patient_name, appt.token, service, eta_time)
+                        notify_almost_next(appt.telegram_chat_id, patient_name, appt.token, service, eta_time, appt.public_token)
                     sms.notify_almost_next(
                         phone, patient_name, appt.token, service, eta_time,
                         current_token=serving, wait_seconds=wait_sec,
+                        public_token=appt.public_token,
                     )
                 elif ahead == 0 and prev_ahead > 0:
                     from app.services.queue import current_serving_token
                     serving = current_serving_token(db, doctor.id, slot) if doctor else None
                     wait_sec = int(eta_wait) if eta_wait is not None else None
                     if appt.telegram_chat_id:
-                        notify_next(appt.telegram_chat_id, patient_name, appt.token, service, eta_time)
+                        notify_next(appt.telegram_chat_id, patient_name, appt.token, service, eta_time, appt.public_token)
                     sms.notify_next(
                         phone, patient_name, appt.token, service, eta_time,
                         current_token=serving, wait_seconds=wait_sec,
+                        public_token=appt.public_token,
                     )
 
             if appt.status == AppointmentStatus.in_progress:

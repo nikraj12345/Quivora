@@ -128,12 +128,12 @@ def recompute_scan_queue_etas(db: Session, machine_id: int) -> None:
             eta_time = eta_at.astimezone().strftime("%-I:%M %p") if eta_at else None
             if patients_ahead == 1 and prev_ahead > 1:
                 if appt.telegram_chat_id:
-                    notify_almost_next(appt.telegram_chat_id, patient_name, appt.token, machine_name, eta_time)
-                sms.notify_almost_next(phone, patient_name, appt.token, machine_name, eta_time)
+                    notify_almost_next(appt.telegram_chat_id, patient_name, appt.token, machine_name, eta_time, appt.public_token)
+                sms.notify_almost_next(phone, patient_name, appt.token, machine_name, eta_time, public_token=appt.public_token)
             elif patients_ahead == 0 and prev_ahead > 0:
                 if appt.telegram_chat_id:
-                    notify_next(appt.telegram_chat_id, patient_name, appt.token, machine_name, eta_time)
-                sms.notify_next(phone, patient_name, appt.token, machine_name, eta_time)
+                    notify_next(appt.telegram_chat_id, patient_name, appt.token, machine_name, eta_time, appt.public_token)
+                sms.notify_next(phone, patient_name, appt.token, machine_name, eta_time, public_token=appt.public_token)
 
     db.commit()
 

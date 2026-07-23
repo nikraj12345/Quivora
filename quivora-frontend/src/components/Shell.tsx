@@ -5,14 +5,17 @@ import { usePathname } from "next/navigation";
 import { ReactNode, useMemo } from "react";
 import { RoleSwitcher } from "@/components/RoleSwitcher";
 import { useRole } from "@/lib/role";
+import { useAuth } from "@/lib/auth";
 
 export function Shell({ children, title, subtitle }: { children: ReactNode; title?: string; subtitle?: string }) {
   const pathname = usePathname();
   const { mode, hospital, hospitalId, doctor } = useRole();
+  const { user, logout } = useAuth();
+  const isPlatformAdmin = user?.role === "platform_admin";
   const hid = hospitalId || hospital?.id;
 
   const sections = useMemo(() => {
-    if (mode === "admin") {
+    if (mode === "admin" && isPlatformAdmin) {
       return [
         {
           label: "Platform",
@@ -66,7 +69,7 @@ export function Shell({ children, title, subtitle }: { children: ReactNode; titl
         ],
       },
     ];
-  }, [mode, hospital, hospitalId, doctor, hid]);
+  }, [mode, hospital, hospitalId, doctor, hid, isPlatformAdmin]);
 
   const isActive = (href: string) => {
     const linkPath = href.split("?")[0];
@@ -119,6 +122,15 @@ export function Shell({ children, title, subtitle }: { children: ReactNode; titl
             {subtitle && <p className="topbar-sub">{subtitle}</p>}
           </div>
           <RoleSwitcher />
+          {user ? (
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => { void logout(); }} style={{ marginLeft: 8 }}>
+              Sign out
+            </button>
+          ) : (
+            <Link href="/login" className="btn btn-secondary btn-sm" style={{ marginLeft: 8 }}>
+              Sign in
+            </Link>
+          )}
         </header>
         <main className="page-body">{children}</main>
       </div>

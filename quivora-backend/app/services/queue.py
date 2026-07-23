@@ -370,6 +370,7 @@ def create_appointment(
             eta_time=None,
             doctor_live=False,
             sync=True,
+            public_token=appt.public_token,
         )
         return appt
 
@@ -393,7 +394,7 @@ def create_appointment(
         service = f"{service} · {pri}"
 
     if auto_chat and settings.telegram_bot_token:
-        tg.notify_booked(auto_chat, patient.name, appt.token, ahead, service)
+        tg.notify_booked(auto_chat, patient.name, appt.token, ahead, service, appt.public_token)
 
     # Registration SMS with live queue context (current token / wait / ETA)
     from app.models import Prediction
@@ -415,6 +416,7 @@ def create_appointment(
         eta_time=eta_time,
         doctor_live=bool(doctor.is_live and (doctor.active_slot in (None, slot_val))),
         sync=True,
+        public_token=appt.public_token,
     )
 
     return appt
@@ -456,8 +458,8 @@ def _end_consult(db: Session, appt: Appointment, now: datetime) -> None:
     patient_name = appt.patient.name if appt.patient else "Patient"
     service = _service_label(appt)
     if chat_id:
-        tg.notify_ended(chat_id, patient_name, service)
-    sms.notify_ended(phone, patient_name, service)
+        tg.notify_ended(chat_id, patient_name, service, appt.public_token)
+    sms.notify_ended(phone, patient_name, service, appt.public_token)
 
 
 def _start_consult(db: Session, appt: Appointment, now: datetime) -> None:
@@ -469,8 +471,8 @@ def _start_consult(db: Session, appt: Appointment, now: datetime) -> None:
     patient_name = appt.patient.name if appt.patient else "Patient"
     service = _service_label(appt)
     if chat_id:
-        tg.notify_started(chat_id, patient_name, appt.token, service)
-    sms.notify_started(phone, patient_name, appt.token, service)
+        tg.notify_started(chat_id, patient_name, appt.token, service, appt.public_token)
+    sms.notify_started(phone, patient_name, appt.token, service, appt.public_token)
 
 
 def find_next_waiting_in_slot(db: Session, doctor: Doctor, slot: str) -> Optional[Appointment]:
@@ -518,8 +520,8 @@ def start_doctor_break(db: Session, doctor: Doctor, now: datetime) -> None:
         if not appt.patient:
             continue
         if appt.telegram_chat_id:
-            tg.notify_break_started(appt.telegram_chat_id, appt.patient.name, appt.token, doctor.name)
-        sms.notify_break_started(sms.phone_from_patient(appt.patient), appt.patient.name, appt.token, doctor.name)
+            tg.notify_break_started(appt.telegram_chat_id, appt.patient.name, appt.token, doctor.name, appt.public_token)
+        sms.notify_break_started(sms.phone_from_patient(appt.patient), appt.patient.name, appt.token, doctor.name, appt.public_token)
 
 
 def apply_end_consult_flow(db: Session, appointment_id: int, event_type: str) -> Appointment:
@@ -578,13 +580,13 @@ def apply_event(db: Session, appointment_id: int, event_type: str) -> Appointmen
         appt.status = AppointmentStatus.in_progress
         appt.started_at = now
         if chat_id:
-            tg.notify_started(chat_id, patient_name, appt.token, service)
-        sms.notify_started(phone, patient_name, appt.token, service)
+            tg.notify_started(chat_id, patient_name, appt.token, service, appt.public_token)
+        sms.notify_started(phone, patient_name, appt.token, service, appt.public_token)
     elif et == EventType.no_show:
         appt.status = AppointmentStatus.no_show
         if chat_id:
-            tg.notify_no_show(chat_id, patient_name, appt.token)
-        sms.notify_no_show(phone, patient_name, appt.token)
+            tg.notify_no_show(chat_id, patient_name, appt.token, appt.public_token)
+        sms.notify_no_show(phone, patient_name, appt.token, appt.public_token)
     elif et == EventType.emergency_insert:
         # Promote to emergency priority — jumps ahead of all non-emergency
         appt.priority = "emergency"
