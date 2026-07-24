@@ -133,7 +133,11 @@ export function useAuth() {
 
 export function canAccessRoute(role: AuthRole | null | undefined, path: string): boolean {
   if (!role) return false;
-  if (role === "platform_admin" || role === "service") return true;
+  if (role === "service") return true;
+  // Platform admin: hospitals catalog only
+  if (role === "platform_admin") {
+    return path === "/admin" || path.startsWith("/admin/") || path === "/dashboard" || path === "/";
+  }
   if (path.startsWith("/admin") || path.startsWith("/training")) return false;
   if (path.startsWith("/hospital") || path.startsWith("/insights")) {
     return role === "hospital_admin";
@@ -149,7 +153,8 @@ export function canAccessRoute(role: AuthRole | null | undefined, path: string):
     path.startsWith("/doctors") ||
     path.startsWith("/opd") ||
     path.startsWith("/scans") ||
-    path.startsWith("/ops")
+    path.startsWith("/ops") ||
+    path.startsWith("/register")
   ) {
     return role === "hospital_admin" || role === "hospital_staff" || role === "doctor";
   }

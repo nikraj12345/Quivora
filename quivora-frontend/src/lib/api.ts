@@ -423,6 +423,8 @@ export const api = {
     request<Hospital>("/v1/hospitals", { method: "POST", body: JSON.stringify(body) }),
   updateHospital: (ref: string | number, body: Partial<{ name: string; city: string; address: string; phone: string; timezone: string; is_active: boolean }>) =>
     request<Hospital>(`/v1/hospitals/${ref}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteHospital: (ref: string | number) =>
+    request<{ ok: boolean; id: number; is_active: boolean }>(`/v1/hospitals/${ref}`, { method: "DELETE" }),
   searchPatients: (q: string, hospital_id?: number) =>
     request<PatientRecord[]>(`/v1/patients/search?q=${encodeURIComponent(q)}${hospital_id ? `&hospital_id=${hospital_id}` : ""}`),
   patients: (hospital_id?: number) =>
@@ -494,6 +496,10 @@ export const api = {
   patientByPhone: (hospitalRef: string | number, phone: string) =>
     request<PatientRecord | null>(
       `/v1/hospitals/${hospitalRef}/patients/by-phone?phone=${encodeURIComponent(phone)}`
+    ),
+  patientCheckinHint: (hospitalRef: string | number, phone: string) =>
+    request<{ found: boolean; name?: string | null; age?: number | null }>(
+      `/v1/hospitals/${hospitalRef}/patients/checkin-hint?phone=${encodeURIComponent(phone)}`
     ),
   selfCheckin: (
     hospitalRef: string | number,

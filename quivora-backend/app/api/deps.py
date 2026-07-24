@@ -129,13 +129,20 @@ def effective_role(principal: Principal) -> Optional[str]:
     return None
 
 
-def is_platform_admin(principal: Principal) -> bool:
-    if principal.is_service:
-        return True
+def is_platform_admin_user(principal: Principal) -> bool:
+    """True only for the platform_admin user role (not service keys)."""
     return effective_role(principal) == UserRole.platform_admin.value
 
 
+def is_platform_admin(principal: Principal) -> bool:
+    """Platform admin user or service key — hospital catalog / platform tooling."""
+    if principal.is_service:
+        return True
+    return is_platform_admin_user(principal)
+
+
 def can_access_hospital(principal: Principal, hospital_id: int) -> bool:
+    """View access. Platform admin may view hospital records only (not ops data via staff deps)."""
     if principal.is_service:
         return True
     if principal.is_his:
@@ -166,10 +173,12 @@ def allowed_hospital_ids(principal: Principal) -> Optional[list[int]]:
 
 def scoped_hospital_id(principal: Principal, requested: Optional[int] = None) -> int:
     """Resolve hospital_id for endpoints that require one. Non-admins cannot override their tenant."""
-    if is_platform_admin(principal) or principal.is_service:
+    if principal.is_service:
         if requested is None:
             raise HTTPException(status_code=400, detail="hospital_id is required")
         return requested
+    if is_platform_admin_user(principal):
+        raise HTTPException(status_code=403, detail="Platform admin can only manage hospital records")
     if principal.hospital_id is None:
         raise HTTPException(status_code=403, detail="Hospital scope required")
     if requested is not None and requested != principal.hospital_id:
@@ -178,9 +187,12 @@ def scoped_hospital_id(principal: Principal, requested: Optional[int] = None) ->
 
 
 def scoped_hospital_id_optional(principal: Principal, requested: Optional[int] = None) -> Optional[int]:
-    """Platform/service may omit hospital_id to query all; tenant users are pinned to their hospital."""
-    if is_platform_admin(principal) or principal.is_service:
+    """Service may omit hospital_id to query all; tenant users are pinned to their hospital.
+    Platform admin cannot use hospital-scoped ops endpoints."""
+    if principal.is_service:
         return requested
+    if is_platform_admin_user(principal):
+        raise HTTPException(status_code=403, detail="Platform admin can only manage hospital records")
     if principal.hospital_id is None:
         raise HTTPException(status_code=403, detail="Hospital scope required")
     if requested is not None and requested != principal.hospital_id:
@@ -194,12 +206,26 @@ def assert_authenticated_hospital_access(principal: Principal, hospital_id: int)
     assert_hospital_access(principal, hospital_id)
 
 
-def can_manage_hospital(principal: Principal, hospital_id: int) -> bool:
+def can_crud_hospital(principal: Principal, hospital_id: int) -> bool:
+    """Create/update/delete hospital entity — platform admin or that hospital's admin."""
     if principal.is_service:
         return True
     role = effective_role(principal)
     if role == UserRole.platform_admin.value:
         return True
+    return role == UserRole.hospital_admin.value and principal.hospital_id == hospital_id
+
+
+def assert_hospital_crud(principal: Principal, hospital_id: int) -> None:
+    if not can_crud_hospital(principal, hospital_id):
+        raise HTTPException(status_code=403, detail="Hospital CRUD access required")
+
+
+def can_manage_hospital(principal: Principal, hospital_id: int) -> bool:
+    """Hospital settings (doctors, departments, fees) — hospital admin only, not platform."""
+    if principal.is_service:
+        return True
+    role = effective_role(principal)
     return role == UserRole.hospital_admin.value and principal.hospital_id == hospital_id
 
 
@@ -209,6 +235,7 @@ def assert_hospital_manage(principal: Principal, hospital_id: int) -> None:
 
 
 def can_operate_hospital(principal: Principal, hospital_id: int) -> bool:
+    """Day-to-day ops — hospital admin/staff/doctor. Platform admin excluded."""
     if can_manage_hospital(principal, hospital_id):
         return True
     role = effective_role(principal)
@@ -244,12 +271,20 @@ def require_platform_admin(principal: Principal = Depends(require_principal)) ->
     return principal
 
 
+def require_service(principal: Principal = Depends(require_principal)) -> Principal:
+    if not principal.is_service:
+        raise HTTPException(status_code=403, detail="Service API key required")
+    return principal
+
+
 def require_staff_write(principal: Principal = Depends(require_principal)) -> Principal:
+    """Hospital ops write access — excludes platform_admin (hospital CRUD only)."""
     if principal.is_service or principal.is_his:
         return principal
+    if is_platform_admin_user(principal):
+        raise HTTPException(status_code=403, detail="Platform admin can only manage hospital records")
     role = effective_role(principal)
     allowed = {
-        UserRole.platform_admin.value,
         UserRole.hospital_admin.value,
         UserRole.hospital_staff.value,
         UserRole.doctor.value,

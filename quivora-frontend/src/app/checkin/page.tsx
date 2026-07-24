@@ -65,11 +65,11 @@ function CheckinInner() {
     }
     setLoading(true);
     try {
-      const found = await api.patientByPhone(hospitalRef, d);
-      if (found) {
-        setPatient(found);
-        setName(found.name);
-        setAge(found.age);
+      const found = await api.patientCheckinHint(hospitalRef, d);
+      if (found.found) {
+        setPatient(null);
+        setName(found.name || "");
+        setAge(found.age ?? 30);
       } else {
         setPatient(null);
         setName("");

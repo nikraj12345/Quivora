@@ -13,6 +13,7 @@ from app.api.deps import (
     allowed_hospital_ids,
     assert_doctor_access,
     assert_hospital_access,
+    assert_hospital_crud,
     assert_hospital_manage,
     assert_hospital_operate,
     effective_role,
@@ -21,6 +22,7 @@ from app.api.deps import (
     can_operate_hospital,
     require_platform_admin,
     require_principal,
+    require_service,
     require_staff_read,
     require_staff_write,
     scoped_hospital_id_optional,
@@ -65,6 +67,7 @@ from app.schemas import (
     ScanMachineOut,
     ScanQueueItemOut,
     SeedResponse,
+    PatientCheckinHintOut,
     SelfCheckinBody,
     SelfCheckinOut,
     TrainStartResponse,
@@ -223,11 +226,11 @@ def create_hospital(body: HospitalCreate, db: Session = Depends(get_db)):
     return _hospital_out(db, h)
 
 
-@router.patch("/v1/hospitals/{hospital_ref}", response_model=HospitalOut, dependencies=[Depends(require_staff_write)])
+@router.patch("/v1/hospitals/{hospital_ref}", response_model=HospitalOut)
 def update_hospital(
     hospital_ref: str,
     body: HospitalUpdate,
-    principal: Principal = Depends(require_staff_write),
+    principal: Principal = Depends(require_principal),
     db: Session = Depends(get_db),
 ):
     if hospital_ref.isdigit():
@@ -236,7 +239,7 @@ def update_hospital(
         h = db.execute(select(Hospital).where(Hospital.external_id == hospital_ref)).scalar_one_or_none()
     if not h:
         raise HTTPException(404, "Hospital not found")
-    assert_hospital_manage(principal, h.id)
+    assert_hospital_crud(principal, h.id)
     if body.name is not None:
         h.name = body.name.strip()
     if body.city is not None:
@@ -256,6 +259,20 @@ def update_hospital(
     db.commit()
     db.refresh(h)
     return _hospital_out(db, h)
+
+
+@router.delete("/v1/hospitals/{hospital_ref}")
+def delete_hospital(
+    hospital_ref: str,
+    principal: Principal = Depends(require_platform_admin),
+    db: Session = Depends(get_db),
+):
+    """Soft-delete: deactivate hospital. Platform admin only."""
+    h = _resolve_hospital(hospital_ref, db)
+    h.is_active = False
+    db.commit()
+    db.refresh(h)
+    return {"ok": True, "id": h.id, "is_active": h.is_active}
 
 
 @router.get("/v1/hospitals/{hospital_ref}/qr", response_model=HospitalQrInfoOut)
@@ -298,16 +315,39 @@ def hospital_qr_png(hospital_ref: str, db: Session = Depends(get_db)):
 
 
 @router.get("/v1/hospitals/{hospital_ref}/patients/by-phone", response_model=Optional[PatientOut])
-def patient_by_phone(hospital_ref: str, phone: str, db: Session = Depends(get_db)):
+def patient_by_phone(
+    hospital_ref: str,
+    phone: str,
+    principal: Principal = Depends(require_staff_read),
+    db: Session = Depends(get_db),
+):
+    """Staff-only full patient record — scoped to the caller's hospital."""
     h = _resolve_hospital(hospital_ref, db)
+    assert_hospital_access(principal, h.id)
+    return find_patient_by_phone(db, h.id, phone)
+
+
+@router.get(
+    "/v1/hospitals/{hospital_ref}/patients/checkin-hint",
+    response_model=PatientCheckinHintOut,
+)
+def patient_checkin_hint(hospital_ref: str, phone: str, db: Session = Depends(get_db)):
+    """Public QR check-in autofill — same hospital only, minimal fields (no contact PII)."""
+    h = _resolve_hospital(hospital_ref, db)
+    if not h.is_active:
+        raise HTTPException(404, "Hospital not found")
     patient = find_patient_by_phone(db, h.id, phone)
-    return patient
+    if not patient:
+        return PatientCheckinHintOut(found=False)
+    return PatientCheckinHintOut(found=True, name=patient.name, age=patient.age)
 
 
 @router.post("/v1/hospitals/{hospital_ref}/self-checkin", response_model=SelfCheckinOut)
 def hospital_self_checkin(hospital_ref: str, body: SelfCheckinBody, db: Session = Depends(get_db)):
     """Phone lookup → register if new → book doctor (QR self-registration)."""
     h = _resolve_hospital(hospital_ref, db)
+    if not h.is_active:
+        raise HTTPException(404, "Hospital not found")
     try:
         patient, appt, is_new = self_checkin(
             db,
@@ -536,7 +576,7 @@ def opd_summary(
     )
 
 
-@router.post("/v1/admin/seed", response_model=SeedResponse, dependencies=[Depends(require_platform_admin)])
+@router.post("/v1/admin/seed", response_model=SeedResponse, dependencies=[Depends(require_service)])
 def seed(reset: bool = True, db: Session = Depends(get_db)):
     if settings.is_production:
         raise HTTPException(403, "Seed is disabled in production")
@@ -547,7 +587,7 @@ def seed(reset: bool = True, db: Session = Depends(get_db)):
 
 @router.post(
     "/v1/admin/seed-insights/{hospital_ref}",
-    dependencies=[Depends(require_platform_admin)],
+    dependencies=[Depends(require_service)],
 )
 def seed_insights(hospital_ref: str, days: int = 21, db: Session = Depends(get_db)):
     if settings.is_production:
@@ -836,10 +876,11 @@ def hospital_insights(
     if not 5 <= delay_threshold_min <= 180:
         raise HTTPException(400, "delay_threshold_min must be between 5 and 180")
     h = _resolve_hospital(hospital_ref, db)
-    role = effective_role(principal)
-    if not is_platform_admin(principal) and role != "hospital_admin":
-        raise HTTPException(403, "Hospital admin access required for insights")
-    assert_hospital_access(principal, h.id)
+    if not principal.is_service:
+        role = effective_role(principal)
+        if role != "hospital_admin":
+            raise HTTPException(403, "Hospital admin access required for insights")
+        assert_hospital_access(principal, h.id)
     return build_hospital_insights(db, h, days=days, delay_threshold_min=delay_threshold_min)
 
 
@@ -1018,8 +1059,15 @@ def doctor_availability(doctor_ref: str, date: Optional[str] = None, db: Session
 
 
 @router.get("/v1/doctors/{doctor_ref}/schedule", response_model=DoctorDayScheduleOut)
-def doctor_schedule(doctor_ref: str, date: Optional[str] = None, db: Session = Depends(get_db)):
+def doctor_schedule(
+    doctor_ref: str,
+    date: Optional[str] = None,
+    principal: Principal = Depends(require_staff_read),
+    db: Session = Depends(get_db),
+):
     doctor = _resolve_doctor(doctor_ref, db)
+    assert_hospital_access(principal, doctor.hospital_id)
+    assert_doctor_access(principal, doctor.id, doctor.hospital_id)
     hospital = db.get(Hospital, doctor.hospital_id)
     try:
         target = parse_schedule_date(date, hospital)
@@ -1040,6 +1088,14 @@ def post_appointment(
     principal: Principal = Depends(require_staff_write),
     db: Session = Depends(get_db),
 ):
+    doctor = db.execute(
+        select(Doctor).where(Doctor.external_id == body.doctor_external_id)
+    ).scalar_one_or_none()
+    if not doctor:
+        raise HTTPException(400, f"Doctor not found: {body.doctor_external_id}")
+    assert_hospital_operate(principal, doctor.hospital_id)
+    if principal.is_his and principal.hospital_id != doctor.hospital_id:
+        raise HTTPException(403, "HIS key cannot create appointments for another hospital")
     try:
         appt = create_appointment(
             db,
@@ -1059,9 +1115,6 @@ def post_appointment(
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
-    assert_hospital_operate(principal, appt.hospital_id)
-    if principal.is_his and principal.hospital_id != appt.hospital_id:
-        raise HTTPException(403, "HIS key cannot create appointments for another hospital")
     return appt_out(db, appt)
 
 
@@ -1264,7 +1317,7 @@ def appointment_eta(
 @router.post(
     "/v1/train/bootstrap",
     response_model=TrainStartResponse,
-    dependencies=[Depends(require_platform_admin)],
+    dependencies=[Depends(require_service)],
 )
 def start_training(fast: bool = False, db: Session = Depends(get_db)):
     # Ensure hospitals/doctors exist — never wipe live patient queues
@@ -1283,7 +1336,7 @@ def start_training(fast: bool = False, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/v1/train/status/{job_id}", response_model=TrainStatusOut, dependencies=[Depends(require_platform_admin)])
+@router.get("/v1/train/status/{job_id}", response_model=TrainStatusOut, dependencies=[Depends(require_service)])
 def train_status(job_id: str, db: Session = Depends(get_db)):
     job = db.get(TrainJob, job_id)
     if not job:
@@ -1310,7 +1363,7 @@ def train_status(job_id: str, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/v1/train/stats", response_model=TrainStatsOut, dependencies=[Depends(require_platform_admin)])
+@router.get("/v1/train/stats", response_model=TrainStatsOut, dependencies=[Depends(require_service)])
 def train_stats(db: Session = Depends(get_db)):
     doctors = db.execute(select(Doctor).order_by(Doctor.id)).scalars().all()
     rows = []

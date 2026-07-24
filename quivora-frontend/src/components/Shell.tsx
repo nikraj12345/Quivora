@@ -21,7 +21,6 @@ export function Shell({ children, title, subtitle }: { children: ReactNode; titl
           label: "Platform",
           links: [
             { href: "/admin", label: "Hospitals" },
-            { href: "/training", label: "Training" },
           ],
         },
       ];

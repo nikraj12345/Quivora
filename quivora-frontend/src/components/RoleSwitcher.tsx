@@ -46,14 +46,18 @@ export function RoleSwitcher() {
   const availableModes = (["admin", "hospital", "doctor", "patient"] as RoleMode[]).filter((m) => {
     if (m === "admin") return isPlatformAdmin;
     if (m === "patient") return isPatient;
-    if (m === "hospital") return user?.role === "hospital_admin" || user?.role === "hospital_staff" || isPlatformAdmin;
-    if (m === "doctor") return user?.role === "doctor" || user?.role === "hospital_admin" || user?.role === "hospital_staff" || isPlatformAdmin;
+    // Platform admin cannot enter hospital/doctor modes
+    if (isPlatformAdmin) return false;
+    if (m === "hospital") return user?.role === "hospital_admin" || user?.role === "hospital_staff";
+    if (m === "doctor") return user?.role === "doctor" || user?.role === "hospital_admin" || user?.role === "hospital_staff";
     return false;
   });
 
   useEffect(() => {
     if (!user) return;
-    if (mode === "admin" && !isPlatformAdmin) {
+    if (isPlatformAdmin && mode !== "admin") {
+      setMode("admin");
+    } else if (mode === "admin" && !isPlatformAdmin) {
       setMode(isPatient ? "patient" : "hospital");
     }
   }, [user, mode, isPlatformAdmin, isPatient, setMode]);

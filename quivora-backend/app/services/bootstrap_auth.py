@@ -55,7 +55,7 @@ def ensure_bootstrap_users(db: Session) -> None:
             select(Doctor).where(Doctor.hospital_id == h.id).order_by(Doctor.id).limit(1)
         ).scalars().all()
         for d in doctors:
-            if not d.room_pin_hash:
+            if not d.room_pin_hash and not settings.is_production:
                 d.room_pin_hash = hash_password("1234")
             doc_email = f"doctor-{d.external_id.lower()}@quivora.local"
             if not db.execute(select(User).where(User.email == doc_email)).scalar_one_or_none():
@@ -72,6 +72,10 @@ def ensure_bootstrap_users(db: Session) -> None:
 
 
 def ensure_doctor_room_pins(db: Session) -> None:
+    """Dev/staging only: assign demo PIN 1234 to doctors missing a PIN.
+    Production must set unique PINs explicitly — never auto-fill a shared default."""
+    if settings.is_production:
+        return
     doctors = db.execute(select(Doctor).where(Doctor.room_pin_hash.is_(None))).scalars().all()
     if not doctors:
         return

@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Shell } from "@/components/Shell";
 import { api, Hospital } from "@/lib/api";
@@ -8,7 +7,7 @@ import { useRole } from "@/lib/role";
 import { useAuth } from "@/lib/auth";
 
 export default function AdminPage() {
-  const { refresh, setMode, setHospitalId } = useRole();
+  const { refresh } = useRole();
   const { user } = useAuth();
   const isPlatformAdmin = user?.role === "platform_admin";
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
@@ -18,9 +17,7 @@ export default function AdminPage() {
   const [phone, setPhone] = useState("");
   const [timezone, setTimezone] = useState("Asia/Kolkata");
   const [loading, setLoading] = useState(false);
-  const [seeding, setSeeding] = useState(false);
   const [msg, setMsg] = useState("");
-  const [maintenanceMsg, setMaintenanceMsg] = useState("");
 
   const load = async () => {
     const hs = await api.hospitals();
@@ -46,29 +43,34 @@ export default function AdminPage() {
   };
 
   const toggleActive = async (h: Hospital) => {
-    await api.updateHospital(h.id, { is_active: !(h.is_active ?? true) });
-    await load();
-    await refresh();
-  };
-
-  const reseed = async () => {
-    if (!window.confirm("Re-seeding permanently deletes the current hospitals, patients, appointments, and queues. Continue?")) return;
-    setSeeding(true);
-    setMaintenanceMsg("");
     try {
-      await api.seed();
+      await api.updateHospital(h.id, { is_active: !(h.is_active ?? true) });
       await load();
       await refresh();
-      setMaintenanceMsg("Demo database re-seeded successfully.");
     } catch (e) {
-      setMaintenanceMsg(e instanceof Error ? e.message : "Re-seed failed");
-    } finally {
-      setSeeding(false);
+      setMsg(e instanceof Error ? e.message : "Update failed");
+    }
+  };
+
+  const remove = async (h: Hospital) => {
+    if (!window.confirm(`Deactivate “${h.name}”? It will be hidden from booking.`)) return;
+    try {
+      await api.deleteHospital(h.id);
+      await load();
+      await refresh();
+      setMsg(`Deactivated ${h.name}`);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Delete failed");
     }
   };
 
   return (
-    <Shell title="Platform Admin" subtitle="Manage hospitals">
+    <Shell title="Platform Admin" subtitle="View and manage hospitals only">
+      {!isPlatformAdmin ? (
+        <div className="card" style={{ padding: 24 }}>
+          <p style={{ color: "var(--muted)" }}>Platform admin access required.</p>
+        </div>
+      ) : (
       <div className="page-grid-2">
         <div className="card" style={{ overflow: "hidden" }}>
           <div className="card-header">
@@ -92,19 +94,20 @@ export default function AdminPage() {
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                  <button className="btn btn-secondary btn-sm" onClick={() => toggleActive(h)}>
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => toggleActive(h)}>
                     {(h.is_active ?? true) ? "Disable" : "Enable"}
                   </button>
-                  <Link
-                    href={`/hospital/${h.id}`}
-                    className="btn btn-primary btn-sm"
-                    onClick={() => { setMode("hospital"); setHospitalId(h.id); }}
-                  >
-                    Open
-                  </Link>
+                  {(h.is_active ?? true) && (
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => remove(h)} style={{ color: "var(--err)" }}>
+                      Deactivate
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
+            {hospitals.length === 0 && (
+              <p style={{ padding: 16, color: "var(--muted)", fontSize: 13 }}>No hospitals yet — create one.</p>
+            )}
           </div>
         </div>
 
@@ -134,37 +137,12 @@ export default function AdminPage() {
                 <option value="UTC">UTC</option>
               </select>
             </label>
-            {msg && <p style={{ fontSize: 12, color: msg.startsWith("Created") ? "var(--ok)" : "var(--err)" }}>{msg}</p>}
+            {msg && <p style={{ fontSize: 12, color: msg.startsWith("Created") || msg.startsWith("Deactivated") ? "var(--ok)" : "var(--err)" }}>{msg}</p>}
             <button className="btn btn-primary" disabled={loading} onClick={create}>
               {loading ? "Creating…" : "Create hospital"}
             </button>
           </div>
         </div>
-      </div>
-
-      {isPlatformAdmin && (
-      <div className="card" style={{ marginTop: 16, padding: 20 }}>
-        <div style={{ fontWeight: 700 }}>Admin tools</div>
-        <p style={{ margin: "5px 0 16px", color: "var(--muted)", fontSize: 12 }}>
-          Platform-wide maintenance actions. Visible only to platform admins.
-        </p>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <Link href="/training" className="btn btn-primary">Manage training</Link>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            disabled={seeding}
-            onClick={reseed}
-            style={{ color: "var(--err)", borderColor: "var(--err)" }}
-          >
-            {seeding ? "Re-seeding…" : "Re-seed demo database"}
-          </button>
-        </div>
-        {maintenanceMsg && (
-          <p style={{ margin: "12px 0 0", fontSize: 12, color: maintenanceMsg.includes("successfully") ? "var(--ok)" : "var(--err)" }}>
-            {maintenanceMsg}
-          </p>
-        )}
       </div>
       )}
     </Shell>

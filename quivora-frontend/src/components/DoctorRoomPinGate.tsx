@@ -19,8 +19,7 @@ export function DoctorRoomPinGate({
 
   const allowed =
     user &&
-    (user.role === "platform_admin" ||
-      user.role === "hospital_admin" ||
+    (user.role === "hospital_admin" ||
       user.role === "hospital_staff" ||
       (user.role === "doctor" && (!doctorId || user.doctor_id === doctorId)));
 

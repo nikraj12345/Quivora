@@ -170,6 +170,13 @@ class HospitalQrInfoOut(BaseModel):
     sample_phones: list[dict]  # demo helpers for testing
 
 
+class PatientCheckinHintOut(BaseModel):
+    """Public returning-patient hint for QR check-in — no phone/address/contact PII."""
+    found: bool
+    name: Optional[str] = None
+    age: Optional[int] = None
+
+
 class EventCreate(BaseModel):
     appointment_id: int
     event_type: str  # checked_in | started | ended | ended_and_next | ended_and_break | no_show | emergency_insert

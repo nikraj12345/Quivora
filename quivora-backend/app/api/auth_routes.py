@@ -16,9 +16,6 @@ from app.api.deps import (
     effective_role,
     generate_hospital_api_key,
     get_principal,
-    hash_api_key,
-    is_platform_admin,
-    require_platform_admin,
     require_principal,
 )
 from app.config import settings
@@ -146,7 +143,9 @@ def doctor_room_login(body: DoctorRoomLoginIn, db: Session = Depends(get_db)):
         ).scalar_one_or_none()
     if not doctor:
         raise HTTPException(404, "Doctor not found")
-    if not doctor.room_pin_hash or not verify_password(body.pin, doctor.room_pin_hash):
+    if not doctor.room_pin_hash:
+        raise HTTPException(401, "Doctor room PIN is not configured")
+    if not verify_password(body.pin, doctor.room_pin_hash):
         raise HTTPException(401, "Invalid room PIN")
     user = db.execute(
         select(User).where(User.doctor_id == doctor.id, User.role == UserRole.doctor.value)
@@ -247,16 +246,13 @@ def list_users(
     db: Session = Depends(get_db),
 ):
     role = effective_role(principal)
-    q = select(User).order_by(User.id)
-    if is_platform_admin(principal):
-        if hospital_id:
-            q = q.where(User.hospital_id == hospital_id)
-    elif role == UserRole.hospital_admin.value:
-        if not principal.hospital_id:
-            raise HTTPException(403, "Hospital admin not linked to a hospital")
-        q = q.where(User.hospital_id == principal.hospital_id)
-    else:
-        raise HTTPException(403, "Admin access required")
+    if role != UserRole.hospital_admin.value:
+        raise HTTPException(403, "Hospital admin access required")
+    if not principal.hospital_id:
+        raise HTTPException(403, "Hospital admin not linked to a hospital")
+    q = select(User).where(User.hospital_id == principal.hospital_id).order_by(User.id)
+    if hospital_id is not None and hospital_id != principal.hospital_id:
+        raise HTTPException(403, "No access to this hospital")
     users = db.execute(q).scalars().all()
     return [_user_out(u) for u in users]
 
@@ -268,19 +264,25 @@ def create_user(
     db: Session = Depends(get_db),
 ):
     role = effective_role(principal)
-    if body.role == UserRole.platform_admin.value and not is_platform_admin(principal):
-        raise HTTPException(403, "Only platform admin can create platform admins")
-    if body.role in (UserRole.hospital_admin.value, UserRole.hospital_staff.value, UserRole.doctor.value):
-        if not body.hospital_id:
-            raise HTTPException(400, "hospital_id required")
-        if is_platform_admin(principal):
-            pass
-        elif role == UserRole.hospital_admin.value:
-            assert_hospital_manage(principal, body.hospital_id)
-            if body.role == UserRole.hospital_admin.value:
-                raise HTTPException(403, "Cannot create another hospital admin")
-        else:
-            raise HTTPException(403, "Admin access required")
+    if body.role == UserRole.platform_admin.value:
+        raise HTTPException(403, "Cannot create platform admins via API")
+    if body.role not in (UserRole.hospital_staff.value, UserRole.doctor.value):
+        raise HTTPException(403, "Hospital admin can only create staff or doctor users")
+    if role != UserRole.hospital_admin.value:
+        raise HTTPException(403, "Hospital admin access required")
+    if not body.hospital_id:
+        raise HTTPException(400, "hospital_id required")
+    assert_hospital_manage(principal, body.hospital_id)
+    if body.role == UserRole.doctor.value:
+        if not body.doctor_id:
+            raise HTTPException(400, "doctor_id required for doctor users")
+        doctor = db.get(Doctor, body.doctor_id)
+        if not doctor or doctor.hospital_id != body.hospital_id:
+            raise HTTPException(400, "doctor_id must belong to the same hospital")
+    elif body.doctor_id is not None:
+        raise HTTPException(400, "doctor_id only allowed for doctor users")
+    if body.patient_id is not None:
+        raise HTTPException(400, "patient_id cannot be set when creating staff users")
     email = body.email.strip().lower()
     if db.execute(select(User).where(User.email == email)).scalar_one_or_none():
         raise HTTPException(400, "Email already registered")
@@ -290,8 +292,8 @@ def create_user(
         password_hash=hash_password(body.password),
         role=body.role,
         hospital_id=body.hospital_id,
-        doctor_id=body.doctor_id,
-        patient_id=body.patient_id,
+        doctor_id=body.doctor_id if body.role == UserRole.doctor.value else None,
+        patient_id=None,
         is_active=True,
     )
     db.add(user)
@@ -303,10 +305,11 @@ def create_user(
 @router.get("/v1/hospitals/{hospital_ref}/api-keys", response_model=list[HospitalApiKeyOut])
 def list_hospital_api_keys(
     hospital_ref: str,
-    principal: Principal = Depends(require_platform_admin),
+    principal: Principal = Depends(require_principal),
     db: Session = Depends(get_db),
 ):
     h = resolve_hospital(hospital_ref, db)
+    assert_hospital_manage(principal, h.id)
     rows = db.execute(
         select(HospitalApiKey).where(HospitalApiKey.hospital_id == h.id).order_by(HospitalApiKey.id)
     ).scalars().all()
@@ -328,10 +331,11 @@ def list_hospital_api_keys(
 def create_hospital_api_key(
     hospital_ref: str,
     name: str = "HIS",
-    principal: Principal = Depends(require_platform_admin),
+    principal: Principal = Depends(require_principal),
     db: Session = Depends(get_db),
 ):
     h = resolve_hospital(hospital_ref, db)
+    assert_hospital_manage(principal, h.id)
     full, prefix, key_hash = generate_hospital_api_key()
     row = HospitalApiKey(
         hospital_id=h.id,

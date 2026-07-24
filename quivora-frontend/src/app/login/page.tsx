@@ -17,17 +17,30 @@ function LoginForm() {
   const { login, user, loading } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const next = searchParams.get("next") || "/dashboard";
+  const nextParam = searchParams.get("next");
   const [email, setEmail] = useState("admin@quivora.local");
   const [password, setPassword] = useState("Quivora@123");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  const destinationFor = (role: string | undefined) => {
+    if (role === "platform_admin") {
+      if (nextParam && (nextParam === "/admin" || nextParam.startsWith("/admin/") || nextParam === "/dashboard" || nextParam === "/")) {
+        return nextParam === "/dashboard" || nextParam === "/" ? "/admin" : nextParam;
+      }
+      return "/admin";
+    }
+    if (nextParam) return nextParam;
+    if (role === "patient") return "/patient-portal";
+    if (role === "doctor") return "/doctor";
+    return "/reception";
+  };
+
   useEffect(() => {
     if (!loading && user) {
-      router.replace(next);
+      router.replace(destinationFor(user.role));
     }
-  }, [loading, user, next, router]);
+  }, [loading, user, nextParam, router]);
 
   if (loading) {
     return (
@@ -51,7 +64,6 @@ function LoginForm() {
     setError("");
     try {
       await login(email.trim(), password);
-      router.replace(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {

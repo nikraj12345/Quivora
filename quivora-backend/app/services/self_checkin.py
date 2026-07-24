@@ -83,6 +83,16 @@ def self_checkin(
     if len(digits) < 10:
         raise ValueError("Enter a valid 10-digit mobile number")
 
+    from app.models import Doctor
+
+    doctor = db.execute(
+        select(Doctor).where(Doctor.external_id == doctor_external_id)
+    ).scalar_one_or_none()
+    if not doctor:
+        raise ValueError(f"Doctor not found: {doctor_external_id}")
+    if doctor.hospital_id != hospital.id:
+        raise ValueError("Doctor does not belong to this hospital")
+
     patient = find_patient_by_phone(db, hospital.id, digits)
     is_new = False
     if not patient:
@@ -118,13 +128,9 @@ def self_checkin(
         db.flush()
         is_new = True
     else:
+        # Returning patient: keep stored identity (do not overwrite via public check-in)
         if not patient.phone:
             patient.phone = format_phone_display(digits)
-        if name and name.strip():
-            patient.name = name.strip()
-        if age is not None and 0 <= age <= 120:
-            patient.age = int(age)
-            patient.age_band = age_to_band(int(age))
 
     appt = create_appointment(
         db,

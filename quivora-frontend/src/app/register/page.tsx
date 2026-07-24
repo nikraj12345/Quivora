@@ -361,7 +361,7 @@ function RegisterPageContent() {
   const issueToken = async () => {
     setLoading(true); setError("");
     try {
-      const staffRoles = ["platform_admin", "hospital_admin", "hospital_staff", "doctor", "service"];
+      const staffRoles = ["hospital_admin", "hospital_staff", "doctor", "service"];
       if (!user || !staffRoles.includes(user.role)) {
         setError("Hospital staff must sign in to register patients and issue tokens.");
         setLoading(false);
