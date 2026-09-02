@@ -502,8 +502,6 @@ def opd_summary(
     db: Session = Depends(get_db),
 ):
     hospital_id = scoped_hospital_id_optional(principal, hospital_id)
-    if hospital_id is None:
-        raise HTTPException(400, "hospital_id is required")
     from datetime import datetime, timezone
     from app.models import AppointmentStatus
 
@@ -1627,6 +1625,9 @@ def create_scan_appointment(
         status=appt.status.value,
         public_token=appt.public_token,
     )
+
+
+@router.post("/v1/scans/events")
 def scan_event(
     body: ScanEventCreate,
     principal: Principal = Depends(require_staff_write),

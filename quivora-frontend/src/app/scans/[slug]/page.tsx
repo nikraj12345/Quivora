@@ -45,7 +45,7 @@ export default function ScanRoomPage() {
     const q = await api.scanQueue(slug);
     setQueue(q);
     const inProgress = q.find((x) => x.status === "in_progress");
-    setCurrent(inProgress ? { id: inProgress.appointment_id, external_id: "", machine_id: m.id, machine_name: m.name, scan_type: m.scan_type, patient_name: inProgress.patient_name, token: inProgress.token, age: inProgress.age, age_band: inProgress.age_band, status: inProgress.status } : null);
+    setCurrent(inProgress ? { id: inProgress.appointment_id, public_token: "", external_id: "", machine_id: m.id, machine_name: m.name, scan_type: m.scan_type, patient_name: inProgress.patient_name, token: inProgress.token, age: inProgress.age, age_band: inProgress.age_band, status: inProgress.status } : null);
   }, [slug]);
 
   useEffect(() => {

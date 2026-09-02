@@ -52,7 +52,27 @@ export default function MyTicketPage() {
   const [telegramBot, setTelegramBot] = useState<string | null>(null);
   const [smsEnabled, setSmsEnabled] = useState(false);
   const [smsProvider, setSmsProvider] = useState<string | null>(null);
+  const [remainingSec, setRemainingSec] = useState<number | null>(null);
   const prevAheadRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (eta?.wait_seconds == null) return;
+    setRemainingSec((prev) => {
+      // If we don't have a remaining count yet or backend value significantly shifted, update it
+      if (prev === null || Math.abs(prev - eta.wait_seconds) > 15) {
+        return eta.wait_seconds;
+      }
+      return prev;
+    });
+  }, [eta?.wait_seconds]);
+
+  useEffect(() => {
+    if (remainingSec === null || remainingSec <= 0) return;
+    const timer = setInterval(() => {
+      setRemainingSec((prev) => (prev && prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [remainingSec]);
 
   useEffect(() => {
     api.health().then((h) => {
@@ -118,6 +138,14 @@ export default function MyTicketPage() {
     : (eta as Eta).doctor_name;
   const telegramStartRef = isPublic ? ticketRef : ticketRef;
 
+  const fmtCountdown = (sec: number | null) => {
+    if (sec === null || sec < 0) return "--:--";
+    if (sec === 0) return "00:00";
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  };
+
   return (
     <div className={`ticket-page ticket-page--${phase}`}>
       <div className="ticket-card">
@@ -152,36 +180,47 @@ export default function MyTicketPage() {
         <div className="ticket-body">
           {phase === "waiting" && (
             <>
-              <div className="ticket-eta">
-                <p className="ticket-label">Expected time</p>
+              {/* TOP SECTION: Countdown (MM:SS) + Est Wait & Patients Ahead */}
+              <div className="ticket-countdown-box">
+                <p className="ticket-label">Est. Waiting Time</p>
+                <div className="ticket-countdown-timer">
+                  {fmtCountdown(remainingSec)}
+                </div>
+                <div className="ticket-metrics" style={{ marginTop: 12 }}>
+                  <div>
+                    <p className={`ticket-metric-val ${queueFlash ? "is-flash" : ""}`}>
+                      {eta.patients_ahead}
+                    </p>
+                    <p className="ticket-hint">ahead of you</p>
+                  </div>
+                  <div>
+                    <p className="ticket-metric-val">
+                      {eta.wait_seconds > 0 ? fmtMins(eta.wait_seconds) : "—"}
+                    </p>
+                    <p className="ticket-hint">total est. wait</p>
+                  </div>
+                </div>
+              </div>
+
+              {prevAhead !== null && prevAhead > eta.patients_ahead && (
+                <p className="ticket-moved">
+                  Queue moved — {prevAhead - eta.patients_ahead} called
+                </p>
+              )}
+
+              {/* BOTTOM SECTION: Estimated Turn / Expected Time */}
+              <div className="ticket-eta" style={{ marginTop: 20 }}>
+                <p className="ticket-label">Estimated Turn Time</p>
                 <p className="ticket-eta-time">{etaTime || "—"}</p>
                 {etaTime ? (
-                  <p className="ticket-hint">± {Math.round(eta.confidence_min)} min</p>
+                  <p className="ticket-hint">± {Math.round(eta.confidence_min)} min confidence window</p>
                 ) : (
                   <p className="ticket-hint">
                     Updates when {isScan ? "machine" : "doctor"} goes live
                   </p>
                 )}
               </div>
-              <div className="ticket-metrics">
-                <div>
-                  <p className={`ticket-metric-val ${queueFlash ? "is-flash" : ""}`}>
-                    {eta.patients_ahead}
-                  </p>
-                  <p className="ticket-hint">ahead of you</p>
-                </div>
-                <div>
-                  <p className="ticket-metric-val">
-                    {eta.wait_seconds > 0 ? fmtMins(eta.wait_seconds) : "—"}
-                  </p>
-                  <p className="ticket-hint">est. wait</p>
-                </div>
-              </div>
-              {prevAhead !== null && prevAhead > eta.patients_ahead && (
-                <p className="ticket-moved">
-                  Queue moved — {prevAhead - eta.patients_ahead} called
-                </p>
-              )}
+
               <p className="ticket-live-note">Live updates every few seconds</p>
             </>
           )}

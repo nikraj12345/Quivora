@@ -84,6 +84,8 @@ def run():
                     db.add(patient)
                     db.flush()
                     vtype = rtype()
+                    from datetime import datetime, timezone
+                    now_utc = datetime.now(timezone.utc)
                     db.add(Appointment(
                         hospital_id=doc.hospital_id,
                         external_id=f"APT-{uuid.uuid4().hex[:10]}",
@@ -95,6 +97,8 @@ def run():
                         age=age,
                         age_band=age_to_band(age),
                         slot=slot,
+                        scheduled_at=now_utc,
+                        created_at=now_utc,
                         telegram_chat_id="1140737679",
                     ))
                     doc_ok += 1

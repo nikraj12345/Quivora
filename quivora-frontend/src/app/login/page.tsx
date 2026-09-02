@@ -33,7 +33,7 @@ function LoginForm() {
     if (nextParam) return nextParam;
     if (role === "patient") return "/patient-portal";
     if (role === "doctor") return "/doctor";
-    return "/reception";
+    return "/opd";
   };
 
   useEffect(() => {

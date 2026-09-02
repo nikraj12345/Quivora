@@ -52,6 +52,26 @@ export default function PatientPage() {
     return () => clearInterval(t);
   }, [id]);
 
+  const [remainingSec, setRemainingSec] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (eta?.wait_seconds == null) return;
+    setRemainingSec((prev) => {
+      if (prev === null || Math.abs(prev - eta.wait_seconds) > 15) {
+        return eta.wait_seconds;
+      }
+      return prev;
+    });
+  }, [eta?.wait_seconds]);
+
+  useEffect(() => {
+    if (remainingSec === null || remainingSec <= 0) return;
+    const timer = setInterval(() => {
+      setRemainingSec((prev) => (prev && prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [remainingSec]);
+
   if (!eta) {
     return (
       <Shell title="Your visit">
@@ -65,6 +85,14 @@ export default function PatientPage() {
   const etaTime = eta.eta_at
     ? new Date(eta.eta_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : null;
+
+  const fmtCountdown = (sec: number | null) => {
+    if (sec === null || sec < 0) return "--:--";
+    if (sec === 0) return "00:00";
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  };
 
   return (
     <Shell title="Your visit">
@@ -96,41 +124,46 @@ export default function PatientPage() {
         {/* State-specific content */}
         {state === "waiting" ? (
           <>
-            {etaTime ? (
-              <>
-                <p className="text-xs uppercase tracking-widest text-[var(--muted)]">
-                  Expected consultation
-                </p>
-                <p className="font-[family-name:var(--font-display)] text-5xl mt-1">{etaTime}</p>
-                <p className="mt-1 text-sm text-[var(--muted)]">
-                  ± {Math.round(eta.confidence_min)} min
-                </p>
-                <p
-                  className="mt-4 text-2xl font-bold transition-all"
-                  style={{ color: flash ? "var(--warn)" : "var(--ink)" }}
-                >
-                  {eta.patients_ahead} ahead
-                </p>
-                <p className="text-sm text-[var(--muted)]">
-                  ~{Math.round(eta.wait_seconds / 60)} min wait
-                </p>
-                {prevAhead !== null && prevAhead > eta.patients_ahead ? (
-                  <p className="mt-2 text-xs text-[var(--ok)]">
-                    Queue moved — {prevAhead - eta.patients_ahead} patient(s) called
-                  </p>
-                ) : null}
-              </>
-            ) : (
-              <div className="mt-2">
-                <p className="text-lg text-[var(--muted)]">Doctor not yet live</p>
-                <p className="mt-1 text-sm text-[var(--muted)]">
-                  ETA and wait time will appear once the doctor starts their session.
-                </p>
-                <p className="mt-3 text-sm font-medium">
-                  {eta.patients_ahead} patient(s) in queue ahead of you
-                </p>
+            {/* TOP: Real-time Countdown Timer */}
+            <div className="ticket-countdown-box">
+              <p className="ticket-label">Est. Waiting Time</p>
+              <div className="ticket-countdown-timer">
+                {fmtCountdown(remainingSec)}
               </div>
+              <div className="ticket-metrics" style={{ marginTop: 12 }}>
+                <div>
+                  <p className={`ticket-metric-val ${flash ? "is-flash" : ""}`}>
+                    {eta.patients_ahead}
+                  </p>
+                  <p className="ticket-hint">ahead of you</p>
+                </div>
+                <div>
+                  <p className="ticket-metric-val">
+                    {eta.wait_seconds > 0 ? `${Math.round(eta.wait_seconds / 60)} min` : "—"}
+                  </p>
+                  <p className="ticket-hint">total est. wait</p>
+                </div>
+              </div>
+            </div>
+
+            {prevAhead !== null && prevAhead > eta.patients_ahead && (
+              <p className="ticket-moved">
+                Queue moved — {prevAhead - eta.patients_ahead} called
+              </p>
             )}
+
+            {/* BOTTOM: Expected Turn Time */}
+            <div className="ticket-eta" style={{ marginTop: 20 }}>
+              <p className="ticket-label">Estimated Turn Time</p>
+              <p className="ticket-eta-time">{etaTime || "—"}</p>
+              {etaTime ? (
+                <p className="ticket-hint">± {Math.round(eta.confidence_min)} min confidence window</p>
+              ) : (
+                <p className="ticket-hint">
+                  Updates when doctor goes live
+                </p>
+              )}
+            </div>
           </>
         ) : state === "next" ? (
           <>

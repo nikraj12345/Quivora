@@ -53,18 +53,16 @@ export function Shell({ children, title, subtitle }: { children: ReactNode; titl
       {
         label: "Today",
         links: [
-          { href: "/reception", label: "Board" },
+          { href: "/opd", label: "Doctor Management" },
           { href: hid ? `/register?hospital=${hid}&source=hospital` : "/register", label: "Register" },
-          { href: "/doctors", label: "Doctors" },
           { href: "/insights", label: "Insights" },
         ],
       },
       {
         label: "More",
         links: [
+          { href: "/scans", label: "Scan Management" },
           { href: hid ? `/hospital/${hid}` : "/hospital", label: "Hospital" },
-          { href: "/scans", label: "Scans" },
-          { href: "/opd", label: "Queues" },
         ],
       },
     ];
@@ -72,7 +70,7 @@ export function Shell({ children, title, subtitle }: { children: ReactNode; titl
 
   const isActive = (href: string) => {
     const linkPath = href.split("?")[0];
-    if (linkPath === "/reception") return pathname.startsWith("/reception") || pathname.startsWith("/room");
+    if (linkPath === "/opd") return pathname.startsWith("/opd") || pathname.startsWith("/room");
     if (linkPath === "/register") return pathname.startsWith("/register");
     if (linkPath === "/doctors") return pathname.startsWith("/doctors");
     if (linkPath === "/insights") return pathname.startsWith("/insights");

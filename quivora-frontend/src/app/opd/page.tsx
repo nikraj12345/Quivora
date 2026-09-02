@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Shell } from "@/components/Shell";
+import { DoctorLiveToggle } from "@/components/DoctorLiveToggle";
 import { api, Doctor, QueueItem } from "@/lib/api";
 import { useRole } from "@/lib/role";
 import { formatSlotsList, slotShort } from "@/lib/slots";
@@ -12,7 +13,7 @@ function fmt(iso: string | null) {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function DoctorCard({ doc, queue }: { doc: Doctor; queue: QueueItem[] }) {
+function DoctorCard({ doc, queue, onDoctorUpdated }: { doc: Doctor; queue: QueueItem[]; onDoctorUpdated?: (updated: Doctor) => void }) {
   return (
     <div className="card" style={{ overflow: "hidden" }}>
       {/* Header */}
@@ -36,9 +37,18 @@ function DoctorCard({ doc, queue }: { doc: Doctor; queue: QueueItem[] }) {
             {doc.is_live && doc.active_slot ? ` · live: ${slotShort(doc.active_slot)}` : ""}
           </div>
         </div>
-        <Link href={`/room/${doc.external_id}`} className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }}>
-          Room
-        </Link>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, flexShrink: 0 }}>
+          <DoctorLiveToggle
+            externalId={doc.external_id}
+            isLive={doc.is_live}
+            slots={doc.slots}
+            activeSlot={doc.active_slot}
+            onChanged={(updated) => onDoctorUpdated?.(updated)}
+          />
+          <Link href={`/room/${doc.external_id}`} className="btn btn-secondary btn-sm">
+            Room →
+          </Link>
+        </div>
       </div>
 
       {/* Queue */}
@@ -124,7 +134,7 @@ export default function OpdPage() {
   const totalInQueue = Object.values(queues).reduce((s, q) => s + q.length, 0);
 
   return (
-    <Shell title="OPD Board" subtitle={hospital ? `${hospital.name} · ${hospital.city}` : "Select a hospital"}>
+    <Shell title="Doctor Management" subtitle={hospital ? `${hospital.name} · ${hospital.city}` : "Select a hospital"}>
       {/* Summary bar */}
       <div style={{ display: "flex", gap: 20, marginBottom: 20, flexWrap: "wrap" }}>
         <span style={{ fontSize: 13, color: "var(--muted)" }}>
@@ -138,7 +148,12 @@ export default function OpdPage() {
       {/* Doctor grid */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 }}>
         {doctors.map((d) => (
-          <DoctorCard key={d.external_id} doc={d} queue={queues[d.external_id] || []} />
+          <DoctorCard
+            key={d.external_id}
+            doc={d}
+            queue={queues[d.external_id] || []}
+            onDoctorUpdated={(updated) => setDoctors((prev) => prev.map((x) => (x.id === updated.id ? updated : x)))}
+          />
         ))}
         {doctors.length === 0 && (
           <p style={{ color: "var(--muted)", fontSize: 14 }}>No doctors found for this hospital.</p>

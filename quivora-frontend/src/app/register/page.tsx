@@ -468,19 +468,25 @@ function RegisterPageContent() {
           <div className="register-body">
             {step === "hospital" && (
               <div>
-                <p style={{ color: "var(--muted)", marginBottom: 16, fontSize: 13 }}>Select the hospital to register the patient at.</p>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <p style={{ color: "var(--muted)", marginBottom: 20, fontSize: 14 }}>Select the hospital to register the patient at.</p>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 14 }}>
                   {hospitals.map((h) => (
                     <button key={h.id} onClick={() => { setSelHospital(h); setStep("patient"); }}
-                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface-2)", cursor: "pointer", textAlign: "left", transition: "border-color 0.15s" }}
-                      onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
-                      onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
+                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 20px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", background: "var(--surface-2)", cursor: "pointer", textAlign: "left", transition: "all 0.15s ease" }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.borderColor = "var(--accent)";
+                        e.currentTarget.style.transform = "translateY(-1px)";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.borderColor = "var(--border)";
+                        e.currentTarget.style.transform = "none";
+                      }}
                     >
                       <div>
-                        <div style={{ fontWeight: 600, fontSize: 14 }}>{h.name}</div>
-                        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{h.city}</div>
+                        <div style={{ fontWeight: 600, fontSize: 15, color: "var(--ink)" }}>{h.name}</div>
+                        <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>{h.city}</div>
                       </div>
-                      <span style={{ color: "var(--accent)", fontSize: 18 }}>›</span>
+                      <span style={{ color: "var(--accent)", fontSize: 20, fontWeight: "600" }}>›</span>
                     </button>
                   ))}
                 </div>
@@ -490,155 +496,161 @@ function RegisterPageContent() {
             {step === "patient" && (
               <div>
                 {selDoctor && (
-                  <div style={{ marginBottom: 16, padding: "12px 14px", background: "var(--accent-light)", borderRadius: 10, fontSize: 13, color: "var(--accent-dark)" }}>
-                    Registering for <strong>{selDoctor.name}</strong> · {selDoctor.department}
-                    {selHospital && <span style={{ color: "var(--muted)" }}> at {selHospital.name}</span>}
+                  <div style={{ marginBottom: 20, padding: "14px 18px", background: "var(--accent-light)", borderRadius: "var(--radius-sm)", fontSize: 14, color: "var(--accent-dark)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div>
+                      Registering for <strong>{selDoctor.name}</strong> · {selDoctor.department}
+                      {selHospital && <span style={{ color: "var(--muted)" }}> at {selHospital.name}</span>}
+                    </div>
+                    <span className="badge badge-live" style={{ fontSize: 11 }}>Active Doctor</span>
                   </div>
                 )}
 
-                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                  <div>
-                    <label className="input-label">Mobile number</label>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <input
-                        className="input"
-                        inputMode="tel"
-                        placeholder="10-digit mobile"
-                        value={phone}
-                        onChange={(e) => {
-                          setPhone(e.target.value);
-                          if (phoneChecked) resetPhoneState();
-                        }}
-                        onBlur={() => {
-                          if (digitsOnly(phone).length === 10 && !phoneChecked) lookupPhone();
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") lookupPhone();
-                        }}
-                      />
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        disabled={lookupLoading || digitsOnly(phone).length < 10}
-                        onClick={() => lookupPhone()}
-                      >
-                        {lookupLoading ? "…" : "Check"}
-                      </button>
-                    </div>
-                    {phoneChecked && selPatient && (
-                      <p style={{ fontSize: 12, color: "var(--ok)", marginTop: 6 }}>Found — name filled from records</p>
-                    )}
-                    {phoneChecked && !selPatient && (
-                      <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>New number — enter name below</p>
-                    )}
-                  </div>
-
-                  {phoneChecked && (
-                    <>
-                      <div>
-                        <label className="input-label">Full name</label>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 24, alignItems: "start" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 16, background: "var(--surface-2)", padding: 20, borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
+                    <h3 style={{ fontSize: 15, fontWeight: 650, margin: 0, color: "var(--ink)" }}>1. Patient Information</h3>
+                    <div>
+                      <label className="input-label">Mobile number</label>
+                      <div style={{ position: "relative", marginTop: 4 }}>
                         <input
                           className="input"
-                          value={patientName}
-                          onChange={(e) => setPatientName(e.target.value)}
-                          placeholder="e.g. Rohan Mehta"
-                          autoFocus={!selPatient}
-                        />
-                      </div>
-                      <div>
-                        <label className="input-label">Age</label>
-                        <input
-                          type="number"
-                          className="input"
-                          value={patientAge}
-                          onChange={(e) => setPatientAge(Number(e.target.value))}
-                          style={{ maxWidth: 120 }}
-                          min={0}
-                          max={120}
-                        />
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                <div style={{ marginTop: 20 }}>
-                  <label className="input-label">Visit type</label>
-                  <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                    {(["new", "follow_up"] as const).map((v) => (
-                      <button key={v} className={`tab-btn ${visitType === v ? "active" : ""}`} onClick={() => setVisitType(v)}>
-                        {v === "new" ? "New visit" : "Follow-up"}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 20 }}>
-                  <label className="input-label">Triage priority</label>
-                  <p style={{ fontSize: 12, color: "var(--muted)", margin: "4px 0 10px" }}>
-                    Emergency → Senior (60+) → Urgent → Normal. Higher tiers jump ahead in the queue.
-                  </p>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                    {(["normal", "urgent", "senior", "emergency"] as Priority[]).map((p) => {
-                      const meta = PRIORITY_META[p];
-                      const selected = priority === p;
-                      return (
-                        <button
-                          key={p}
-                          type="button"
-                          onClick={() => setPriority(p)}
-                          style={{
-                            textAlign: "left",
-                            padding: "12px 14px",
-                            borderRadius: 10,
-                            border: `1.5px solid ${selected ? "var(--accent)" : "var(--border)"}`,
-                            background: selected ? "var(--accent-light)" : "var(--surface-2)",
-                            cursor: "pointer",
+                          inputMode="tel"
+                          placeholder="10-digit mobile"
+                          value={phone}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setPhone(val);
+                            const clean = digitsOnly(val);
+                            if (clean.length === 10) {
+                              lookupPhone(val);
+                            } else if (phoneChecked) {
+                              resetPhoneState();
+                            }
                           }}
-                        >
-                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                            <span className={`badge ${meta.badge}`}>{meta.label}</span>
+                        />
+                        {lookupLoading && (
+                          <div style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", fontSize: 12, color: "var(--accent)", fontWeight: 500 }}>
+                            Checking…
                           </div>
-                          <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.4 }}>{meta.hint}</div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {patientAge >= 60 && priority === "senior" && (
-                    <p style={{ fontSize: 12, color: "var(--accent-dark)", marginTop: 8 }}>Auto-selected: patient is 60+</p>
-                  )}
-                  {priority !== "normal" && (
-                    <div style={{ marginTop: 12 }}>
-                      <label className="input-label">Reason (logged)</label>
-                      <input
-                        className="input"
-                        value={priorityReason}
-                        onChange={(e) => setPriorityReason(e.target.value)}
-                        placeholder={
-                          priority === "emergency"
-                            ? "e.g. Chest pain, acute distress"
-                            : priority === "urgent"
-                              ? "e.g. High fever, severe pain"
-                              : "e.g. Age 60+ / mobility assistance"
-                        }
-                      />
+                        )}
+                      </div>
+                      {phoneChecked && selPatient && (
+                        <p style={{ fontSize: 12, color: "var(--ok)", marginTop: 6, fontWeight: 500 }}>✓ Found in database — details auto-filled</p>
+                      )}
+                      {phoneChecked && !selPatient && (
+                        <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>New number — please enter details below</p>
+                      )}
                     </div>
-                  )}
+
+                    {phoneChecked && (
+                      <>
+                        <div>
+                          <label className="input-label">Full name</label>
+                          <input
+                            className="input"
+                            value={patientName}
+                            onChange={(e) => setPatientName(e.target.value)}
+                            placeholder="e.g. Rohan Mehta"
+                            autoFocus={!selPatient}
+                          />
+                        </div>
+                        <div>
+                          <label className="input-label">Age</label>
+                          <input
+                            type="number"
+                            className="input"
+                            value={patientAge}
+                            onChange={(e) => setPatientAge(Number(e.target.value))}
+                            style={{ maxWidth: 140 }}
+                            min={0}
+                            max={120}
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    <div>
+                      <label className="input-label">Visit type</label>
+                      <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                        {(["new", "follow_up"] as const).map((v) => (
+                          <button key={v} className={`tab-btn ${visitType === v ? "active" : ""}`} onClick={() => setVisitType(v)} style={{ flex: 1, justifyContent: "center" }}>
+                            {v === "new" ? "New visit" : "Follow-up"}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: 16, background: "var(--surface-2)", padding: 20, borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
+                    <div>
+                      <h3 style={{ fontSize: 15, fontWeight: 650, margin: 0, color: "var(--ink)" }}>2. Triage & Priority</h3>
+                      <p style={{ fontSize: 12, color: "var(--muted)", margin: "4px 0 14px" }}>
+                        Emergency → Senior (60+) → Urgent → Normal. Higher priority jumps queue position.
+                      </p>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                        {(["normal", "urgent", "senior", "emergency"] as Priority[]).map((p) => {
+                          const meta = PRIORITY_META[p];
+                          const selected = priority === p;
+                          return (
+                            <button
+                              key={p}
+                              type="button"
+                              onClick={() => setPriority(p)}
+                              style={{
+                                textAlign: "left",
+                                padding: "12px 14px",
+                                borderRadius: 10,
+                                border: `1.5px solid ${selected ? "var(--accent)" : "var(--border)"}`,
+                                background: selected ? "var(--accent-light)" : "var(--surface)",
+                                cursor: "pointer",
+                                transition: "all 0.15s ease",
+                              }}
+                            >
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                                <span className={`badge ${meta.badge}`}>{meta.label}</span>
+                              </div>
+                              <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.4 }}>{meta.hint}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {patientAge >= 60 && priority === "senior" && (
+                        <p style={{ fontSize: 12, color: "var(--accent-dark)", marginTop: 10, fontWeight: 500 }}>Auto-selected: patient is 60+ (Senior Citizen)</p>
+                      )}
+                      {priority !== "normal" && (
+                        <div style={{ marginTop: 14 }}>
+                          <label className="input-label">Reason for Priority (logged for audit)</label>
+                          <input
+                            className="input"
+                            value={priorityReason}
+                            onChange={(e) => setPriorityReason(e.target.value)}
+                            placeholder={
+                              priority === "emergency"
+                                ? "e.g. Chest pain, acute distress"
+                                : priority === "urgent"
+                                  ? "e.g. High fever, severe pain"
+                                  : "e.g. Age 60+ / mobility assistance"
+                            }
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
-                {error && <p style={{ color: "var(--err)", fontSize: 13, marginTop: 12 }}>{error}</p>}
+                {error && <p style={{ color: "var(--err)", fontSize: 13, marginTop: 16, background: "var(--err-light)", padding: "10px 14px", borderRadius: 8 }}>{error}</p>}
 
-                <div style={{ display: "flex", gap: 8, marginTop: 24 }}>
+                <div style={{ display: "flex", gap: 12, marginTop: 28, justifyContent: "flex-end" }}>
                   {prefillDoctorId ? (
-                    <Link href="/reception" className="btn btn-ghost">← Board</Link>
+                    <Link href="/reception" className="btn btn-ghost">← Reception Board</Link>
                   ) : prefillHospitalId ? (
-                    <Link href={prefillSource === "patient" ? "/patient-portal" : "/ops"} className="btn btn-ghost">
-                      ← {prefillSource === "patient" ? "My care" : "Dashboard"}
+                    <Link href={prefillSource === "patient" ? "/patient-portal" : "/reception"} className="btn btn-ghost">
+                      ← {prefillSource === "patient" ? "My care" : "Reception Board"}
                     </Link>
                   ) : (
-                    <button className="btn btn-ghost" onClick={() => setStep("hospital")}>← Back</button>
+                    <button className="btn btn-ghost" onClick={() => setStep("hospital")}>← Back to Hospitals</button>
                   )}
-                  <button className="btn btn-primary" style={{ flex: 1 }} disabled={!canContinuePatient} onClick={() => setStep("service")}>
-                    Continue →
+                  <button className="btn btn-primary" style={{ minWidth: 160 }} disabled={!canContinuePatient} onClick={() => setStep("service")}>
+                    Continue to Service →
                   </button>
                 </div>
               </div>
@@ -646,88 +658,95 @@ function RegisterPageContent() {
 
             {step === "service" && (
               <div>
-                <div style={{ marginBottom: 16, padding: "10px 14px", background: "var(--surface-2)", borderRadius: 8, fontSize: 13 }}>
-                  Patient: <strong>{patientName}</strong>, Age {patientAge} · {digitsOnly(phone)} · {visitType === "new" ? "New visit" : "Follow-up"}
-                  {selDoctor && serviceType === "doctor" && (
-                    <span> · Doctor: <strong>{selDoctor.name}</strong></span>
+                <div style={{ marginBottom: 20, padding: "12px 18px", background: "var(--surface-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)", fontSize: 13, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                  <div>
+                    Patient: <strong>{patientName}</strong>, Age {patientAge} · Mobile: {digitsOnly(phone)} · <span className="badge badge-off">{visitType === "new" ? "New visit" : "Follow-up"}</span>
+                  </div>
+                  {priority !== "normal" && (
+                    <span className={`badge ${PRIORITY_META[priority].badge}`}>{PRIORITY_META[priority].label} Priority</span>
                   )}
                 </div>
 
-                <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-                  <button className={`tab-btn ${serviceType === "doctor" ? "active" : ""}`} onClick={() => setServiceType("doctor")}>🩺 Doctor / OPD</button>
-                  <button className={`tab-btn ${serviceType === "scan" ? "active" : ""}`} onClick={() => setServiceType("scan")}>🔬 Scan / Radiology</button>
+                <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+                  <button className={`tab-btn ${serviceType === "doctor" ? "active" : ""}`} onClick={() => setServiceType("doctor")} style={{ fontSize: 14, padding: "10px 18px" }}>🩺 Doctor / OPD</button>
+                  <button className={`tab-btn ${serviceType === "scan" ? "active" : ""}`} onClick={() => setServiceType("scan")} style={{ fontSize: 14, padding: "10px 18px" }}>🔬 Scan / Radiology</button>
                 </div>
 
-                {serviceType === "doctor" && (
-                  <div style={{ marginBottom: 16 }}>
-                    <label className="input-label">Appointment date</label>
-                    <input
-                      type="date"
-                      className="input"
-                      value={appointmentDate}
-                      min={localDateString()}
-                      max={localDateString(30)}
-                      onChange={(e) => setAppointmentDate(e.target.value)}
-                      style={{ maxWidth: 220 }}
-                    />
-                    <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>
-                      Book up to 30 days ahead. Slots update based on doctor schedule and existing bookings.
-                    </p>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 24, alignItems: "start" }}>
+                  <div>
+                    {serviceType === "doctor" && (
+                      <div style={{ marginBottom: 16 }}>
+                        <label className="input-label">Appointment date</label>
+                        <input
+                          type="date"
+                          className="input"
+                          value={appointmentDate}
+                          min={localDateString()}
+                          max={localDateString(30)}
+                          onChange={(e) => setAppointmentDate(e.target.value)}
+                          style={{ maxWidth: 240, marginTop: 4 }}
+                        />
+                        <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>
+                          Book up to 30 days ahead. Schedules update based on availability.
+                        </p>
+                      </div>
+                    )}
+
+                    <div style={{ maxHeight: 420, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, paddingRight: 4 }}>
+                      {serviceType === "doctor" ? doctors.map((d) => (
+                        <button key={d.id} onClick={() => {
+                          setSelDoctor(d);
+                          setSelSlot(d.slots?.[0] || "morning");
+                        }}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", border: `1.5px solid ${selDoctor?.id === d.id ? "var(--accent)" : "var(--border)"}`, borderRadius: "var(--radius-sm)", background: selDoctor?.id === d.id ? "var(--accent-light)" : "var(--surface)", cursor: "pointer", textAlign: "left", transition: "all 0.15s ease" }}>
+                          <div>
+                            <div style={{ fontWeight: 600, fontSize: 14, color: "var(--ink)" }}>{d.name}</div>
+                            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{d.department}</div>
+                            <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 4 }}>
+                              {formatSlotsList(d.slots)}
+                            </div>
+                            <div style={{ fontSize: 12, color: "var(--accent-dark)", marginTop: 4, fontWeight: 600 }}>
+                              ₹{visitType === "follow_up" ? (d.follow_up_fee ?? 300) : (d.consultation_fee ?? 500)}
+                              {visitType === "follow_up" ? " follow-up" : " new visit"}
+                            </div>
+                          </div>
+                          <div style={{ textAlign: "right", flexShrink: 0 }}>
+                            <span className={d.is_live ? "badge badge-live" : "badge badge-off"}>{d.is_live ? "Live" : "Offline"}</span>
+                            {d.avg_duration_sec && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>avg {Math.round(d.avg_duration_sec / 60)} min</div>}
+                          </div>
+                        </button>
+                      )) : machines.map((m) => (
+                        <button key={m.id} onClick={() => setSelMachine(m)}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", border: `1.5px solid ${selMachine?.id === m.id ? "var(--accent)" : "var(--border)"}`, borderRadius: "var(--radius-sm)", background: selMachine?.id === m.id ? "var(--accent-light)" : "var(--surface)", cursor: "pointer", textAlign: "left", transition: "all 0.15s ease" }}>
+                          <div>
+                            <div style={{ fontWeight: 600, fontSize: 14, color: "var(--ink)" }}>{m.name}</div>
+                            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{SCAN_LABELS[m.scan_type] ?? m.scan_type}</div>
+                            <div style={{ fontSize: 12, color: "var(--accent-dark)", marginTop: 4, fontWeight: 600 }}>
+                              {formatInr(SCAN_FEES[m.scan_type] ?? 1000)}
+                            </div>
+                          </div>
+                          <div style={{ textAlign: "right", flexShrink: 0 }}>
+                            <span className={m.is_live ? "badge badge-live" : "badge badge-off"}>{m.is_live ? "Live" : "Offline"}</span>
+                            {m.avg_duration_sec && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>avg {Math.round(m.avg_duration_sec / 60)} min</div>}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                )}
 
-                <div style={{ maxHeight: 320, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
-                  {serviceType === "doctor" ? doctors.map((d) => (
-                    <button key={d.id} onClick={() => {
-                      setSelDoctor(d);
-                      setSelSlot(d.slots?.[0] || "morning");
-                    }}
-                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", border: `1px solid ${selDoctor?.id === d.id ? "var(--accent)" : "var(--border)"}`, borderRadius: 8, background: selDoctor?.id === d.id ? "var(--accent-light)" : "var(--surface-2)", cursor: "pointer", textAlign: "left", transition: "all 0.12s" }}>
+                  {serviceType === "doctor" && selDoctor && (
+                    <div style={{ background: "var(--surface-2)", padding: 20, borderRadius: "var(--radius-sm)", border: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 16 }}>
                       <div>
-                        <div style={{ fontWeight: 600, fontSize: 13 }}>{d.name}</div>
-                        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{d.department}</div>
-                        <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 4 }}>
-                          {formatSlotsList(d.slots)}
-                        </div>
-                        <div style={{ fontSize: 11, color: "var(--accent-dark)", marginTop: 4, fontWeight: 600 }}>
-                          ₹{visitType === "follow_up" ? (d.follow_up_fee ?? 300) : (d.consultation_fee ?? 500)}
-                          {visitType === "follow_up" ? " follow-up" : " new visit"}
-                        </div>
-                      </div>
-                      <div style={{ textAlign: "right", flexShrink: 0 }}>
-                        <span className={d.is_live ? "badge badge-live" : "badge badge-off"}>{d.is_live ? "Live" : "Offline"}</span>
-                        {d.avg_duration_sec && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>avg {Math.round(d.avg_duration_sec / 60)} min</div>}
-                      </div>
-                    </button>
-                  )) : machines.map((m) => (
-                    <button key={m.id} onClick={() => setSelMachine(m)}
-                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", border: `1px solid ${selMachine?.id === m.id ? "var(--accent)" : "var(--border)"}`, borderRadius: 8, background: selMachine?.id === m.id ? "var(--accent-light)" : "var(--surface-2)", cursor: "pointer", textAlign: "left", transition: "all 0.12s" }}>
-                      <div>
-                        <div style={{ fontWeight: 600, fontSize: 13 }}>{m.name}</div>
-                        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{SCAN_LABELS[m.scan_type] ?? m.scan_type}</div>
-                      </div>
-                      <div style={{ textAlign: "right", flexShrink: 0 }}>
-                        <span className={m.is_live ? "badge badge-live" : "badge badge-off"}>{m.is_live ? "Live" : "Offline"}</span>
-                        {m.avg_duration_sec && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>avg {Math.round(m.avg_duration_sec / 60)} min</div>}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-
-                {serviceType === "doctor" && selDoctor && (
-                  <div className="register-slot-section" style={{ marginTop: 16 }}>
-                    <div className="register-slot-row">
-                      <div className="register-slot-pick">
-                        <div className="input-label" style={{ marginBottom: 8 }}>
-                          Session slot
+                        <div className="input-label" style={{ marginBottom: 10, fontSize: 13 }}>
+                          Session slot for {selDoctor.name}
                           {availabilityLoading && <span style={{ color: "var(--muted)", fontWeight: 500 }}> · checking availability…</span>}
                         </div>
                         {availability && !availability.works_that_day && (
-                          <p style={{ fontSize: 12, color: "var(--err)", marginBottom: 10 }}>
+                          <p style={{ fontSize: 12, color: "var(--err)", marginBottom: 10, background: "var(--err-light)", padding: "8px 12px", borderRadius: 6 }}>
                             Doctor does not work on {formatAppointmentDate(appointmentDate)}.
                           </p>
                         )}
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 10 }}>
                           {(selDoctor.slots || ["morning"]).map((s) => {
                             const slotInfo = availability?.slots.find((slot) => slot.slot === s);
                             const disabled = Boolean(slotInfo && !slotInfo.available);
@@ -742,13 +761,13 @@ function RegisterPageContent() {
                                   display: "flex",
                                   flexDirection: "column",
                                   alignItems: "flex-start",
-                                  padding: "8px 14px",
-                                  minWidth: 140,
+                                  padding: "10px 14px",
                                   opacity: disabled ? 0.55 : 1,
+                                  textAlign: "left",
                                 }}
                               >
-                                <span>{slotLabel(s)}</span>
-                                <span style={{ fontSize: 11, opacity: 0.75, fontWeight: 400 }}>{slotTime(s)}</span>
+                                <span style={{ fontWeight: 600 }}>{slotLabel(s)}</span>
+                                <span style={{ fontSize: 11, opacity: 0.8, fontWeight: 400 }}>{slotTime(s)}</span>
                                 {slotInfo && (
                                   <span style={{ fontSize: 11, marginTop: 4, color: disabled ? "var(--err)" : "var(--muted)" }}>
                                     {disabled ? slotInfo.reason || "Unavailable" : `${slotInfo.booked_count} booked`}
@@ -761,27 +780,29 @@ function RegisterPageContent() {
                       </div>
 
                       {selSlot && (
-                        <div className="register-estimate-inline">
-                          <div className="register-estimate-title">If you book now</div>
-                          <div className="register-estimate-stat">
-                            <span className="register-estimate-label">Token</span>
-                            <span className="register-estimate-value">#{previewToken}</span>
+                        <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 16 }}>
+                          <div className="register-estimate-title" style={{ marginBottom: 10 }}>Live Queue Estimate</div>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                            <div className="register-estimate-stat">
+                              <span className="register-estimate-label">Token</span>
+                              <span className="register-estimate-value">#{previewToken}</span>
+                            </div>
+                            <div className="register-estimate-stat">
+                              <span className="register-estimate-label">Ahead</span>
+                              <span className="register-estimate-value">{previewAhead}</span>
+                            </div>
+                            <div className="register-estimate-stat register-estimate-stat--highlight">
+                              <span className="register-estimate-label">Est. wait</span>
+                              <span className="register-estimate-value">
+                                {previewAhead > 0 ? `~${previewWaitMin} min` : "< 1 min"}
+                              </span>
+                            </div>
+                            <div className="register-estimate-stat">
+                              <span className="register-estimate-label">Expected by</span>
+                              <span className="register-estimate-value">{previewExpectedBy || "—"}</span>
+                            </div>
                           </div>
-                          <div className="register-estimate-stat">
-                            <span className="register-estimate-label">Ahead</span>
-                            <span className="register-estimate-value">{previewAhead}</span>
-                          </div>
-                          <div className="register-estimate-stat register-estimate-stat--highlight">
-                            <span className="register-estimate-label">Est. wait</span>
-                            <span className="register-estimate-value">
-                              {previewAhead > 0 ? `~${previewWaitMin} min` : "< 1 min"}
-                            </span>
-                          </div>
-                          <div className="register-estimate-stat">
-                            <span className="register-estimate-label">By</span>
-                            <span className="register-estimate-value">{previewExpectedBy || "—"}</span>
-                          </div>
-                          <p className="register-estimate-note">
+                          <p className="register-estimate-note" style={{ marginTop: 10 }}>
                             {previewLive
                               ? `Live ${slotShort(selSlot)} queue`
                               : `~${selDoctor.avg_duration_sec ? Math.round(selDoctor.avg_duration_sec / 60) : 12} min × ${previewAhead} ahead`}
@@ -789,15 +810,15 @@ function RegisterPageContent() {
                         </div>
                       )}
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
 
-                {error && <p style={{ color: "var(--err)", fontSize: 13, marginTop: 8 }}>{error}</p>}
+                {error && <p style={{ color: "var(--err)", fontSize: 13, marginTop: 16, background: "var(--err-light)", padding: "10px 14px", borderRadius: 8 }}>{error}</p>}
 
-                <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
-                  <button className="btn btn-ghost" onClick={() => setStep("patient")}>← Back</button>
-                  <button className="btn btn-primary" style={{ flex: 1 }} disabled={loading || (serviceType === "doctor" ? !canIssueDoctor : !selMachine)} onClick={issueToken}>
-                    {loading ? "Booking…" : showPaymentStep ? "Book & continue →" : "Issue token →"}
+                <div style={{ display: "flex", gap: 12, marginTop: 28, justifyContent: "flex-end" }}>
+                  <button className="btn btn-ghost" onClick={() => setStep("patient")}>← Back to Patient</button>
+                  <button className="btn btn-primary" style={{ minWidth: 180 }} disabled={loading || (serviceType === "doctor" ? !canIssueDoctor : !selMachine)} onClick={issueToken}>
+                    {loading ? "Booking…" : showPaymentStep ? "Book & Continue →" : "Issue Token →"}
                   </button>
                 </div>
               </div>

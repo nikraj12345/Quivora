@@ -78,7 +78,7 @@ export function RoleSwitcher() {
     setOpen(false);
     setSubmenuMode(null);
     if (m === "admin") router.push("/admin");
-    else if (m === "hospital") router.push("/reception");
+    else if (m === "hospital") router.push("/opd");
     else if (m === "doctor") router.push("/doctor");
     else router.push("/patient-portal");
   };
@@ -89,7 +89,7 @@ export function RoleSwitcher() {
       setMode("hospital");
       setOpen(false);
       setSubmenuMode(null);
-      router.push("/reception");
+      router.push("/opd");
       return;
     }
     setMode(targetMode);

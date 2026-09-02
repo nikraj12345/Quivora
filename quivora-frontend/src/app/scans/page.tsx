@@ -118,7 +118,7 @@ export default function ScansPage() {
   const scanTypes = [...new Set(machines.map((m) => m.scan_type))];
 
   return (
-    <Shell title="Manage Scans" subtitle={hospital ? `${hospital.name} · ${hospital.city}` : "Select a hospital"}>
+    <Shell title="Scan Management" subtitle={hospital ? `${hospital.name} · ${hospital.city}` : "Select a hospital"}>
       {/* Summary */}
       <div style={{ display: "flex", gap: 20, marginBottom: 20 }}>
         <span style={{ fontSize: 13, color: "var(--muted)" }}>

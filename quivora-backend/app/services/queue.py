@@ -130,11 +130,11 @@ def bump_queue_epoch(db: Session, doctor: Doctor) -> datetime:
     return now
 
 
-def ensure_queue_epoch(db: Session, doctor: Doctor) -> datetime:
-    """Return session token epoch; initialize to now if missing (fresh tokens)."""
+def ensure_queue_epoch(db: Session, doctor: Doctor) -> Optional[datetime]:
+    """Return session token epoch if explicitly set (e.g. queue cleared / reset)."""
     epoch = getattr(doctor, "queue_epoch_at", None)
     if epoch is None:
-        return bump_queue_epoch(db, doctor)
+        return None
     if epoch.tzinfo is None:
         return epoch.replace(tzinfo=timezone.utc)
     return epoch
@@ -300,12 +300,12 @@ def create_appointment(
         from app.services.availability import day_anchor_utc
 
         day_start, day_end = session_day_bounds_utc(hospital, day_anchor_utc(target_date, hospital))
-        token_start = max(epoch, day_start)
+        query_start = epoch if (epoch and epoch >= day_start and epoch < day_end) else day_start
         max_token = db.execute(
             select(func.max(Appointment.token)).where(
                 Appointment.doctor_id == doctor.id,
                 Appointment.slot == slot_val,
-                Appointment.scheduled_at >= token_start,
+                Appointment.scheduled_at >= query_start,
                 Appointment.scheduled_at < day_end,
                 Appointment.status.notin_(
                     [AppointmentStatus.cancelled, AppointmentStatus.no_show]
