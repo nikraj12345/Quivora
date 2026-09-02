@@ -161,7 +161,12 @@ SCAN_MACHINE_NAMES = {
     "blood_test": ["Lab Analyzer A", "Haematology Lab", "Biochemistry Lab", "POCT Station"],
 }
 
-TODAY = datetime.now(tz=timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+# Anchor to local Asia/Kolkata today (UTC 18:30 boundary)
+_now = datetime.now(timezone.utc)
+# IST is UTC+5:30
+_ist_now = _now + timedelta(hours=5, minutes=30)
+_ist_today = _ist_now.replace(hour=0, minute=0, second=0, microsecond=0)
+TODAY = _ist_today - timedelta(hours=5, minutes=30)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS
