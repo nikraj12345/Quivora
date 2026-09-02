@@ -429,35 +429,35 @@ def seed_appointments(db, hospitals, doctors, patients):
             batch.clear()
             dur_samples.clear()
 
-    # --- COMPLETED (past 180 days) ---
-    for _ in range(5500):
-        h = rng.choice(hospitals)
-        docs = doc_by_hosp.get(h.id, [])
-        pats = pat_by_hosp.get(h.id, [])
-        if not docs or not pats:
+    # --- COMPLETED (Past 365 Days — 1 Year Historical Consultations per Doctor) ---
+    for doc in doctors:
+        h = db.get(Hospital, doc.hospital_id)
+        pats = pat_by_hosp.get(doc.hospital_id, [])
+        if not pats:
             continue
-        doc = rng.choice(docs)
-        pat = rng.choice(pats)
-        sched = _past_dt(days_ago_max=180, days_ago_min=2)
-        dur_sec = rng.randint(180, 1800)
-        start = sched + timedelta(minutes=rng.randint(0, 30))
-        end = start + timedelta(seconds=dur_sec)
-        apt, apt_type = make_apt(h, doc, pat, AppointmentStatus.completed, sched, start, end)
-        batch.append(apt)
-        dur_samples.append(DurationSample(
-            doctor_id=doc.id,
-            age_band=pat.age_band,
-            appointment_type=apt_type.value,
-            duration_sec=dur_sec,
-            hour_of_day=start.hour,
-            day_of_week=start.weekday(),
-            source="bootstrap",
-        ))
-        completed_count += 1
-        if len(batch) >= 300:
-            flush_batch()
+        num_past = rng.randint(40, 80)
+        for _ in range(num_past):
+            pat = rng.choice(pats)
+            sched = _past_dt(days_ago_max=365, days_ago_min=1)
+            dur_sec = rng.randint(180, 1800)
+            start = sched + timedelta(minutes=rng.randint(0, 30))
+            end = start + timedelta(seconds=dur_sec)
+            apt, apt_type = make_apt(h, doc, pat, AppointmentStatus.completed, sched, start, end)
+            batch.append(apt)
+            dur_samples.append(DurationSample(
+                doctor_id=doc.id,
+                age_band=pat.age_band,
+                appointment_type=apt_type.value,
+                duration_sec=dur_sec,
+                hour_of_day=start.hour,
+                day_of_week=start.weekday(),
+                source="bootstrap",
+            ))
+            completed_count += 1
+            if len(batch) >= 300:
+                flush_batch()
     flush_batch()
-    print(f"     Completed appointments: {completed_count}")
+    print(f"     Completed 1-year historical consultations: {completed_count}")
 
     # --- ACTIVE TODAY (Guarantee 2 to 40 per doctor) ---
     for doc in doctors:
