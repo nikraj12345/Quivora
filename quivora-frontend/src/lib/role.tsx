@@ -51,7 +51,9 @@ export function RoleProvider({ children }: { children: ReactNode }) {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed.mode) setModeState(parsed.mode);
-        if (parsed.hospitalId) setHospitalIdState(parsed.hospitalId);
+        // Only restore hospitalId for platform admins — locked users get it from the JWT
+        // to avoid stale IDs after a DB reset causing 403s
+        if (parsed.hospitalId && user?.role === "platform_admin") setHospitalIdState(parsed.hospitalId);
         if (parsed.doctorId) setDoctorIdState(parsed.doctorId);
       }
     } catch { /* ignore */ }
@@ -107,7 +109,8 @@ export function RoleProvider({ children }: { children: ReactNode }) {
   }, [hydrated, refresh, user?.id]);
 
   useEffect(() => {
-    if (!hospitalId) return;
+    // Don't fire while hydration + refresh() is still resolving the real hospitalId
+    if (!hospitalId || !hydrated) return;
     let cancelled = false;
     api.doctors(hospitalId)
       .then((ds) => {
@@ -123,7 +126,7 @@ export function RoleProvider({ children }: { children: ReactNode }) {
         if (!cancelled) setDoctors([]);
       });
     return () => { cancelled = true; };
-  }, [hospitalId, doctorId, lockedDoctorId]);
+  }, [hospitalId, doctorId, lockedDoctorId, hydrated]);
 
   const hospital = useMemo(
     () => hospitals.find((h) => h.id === hospitalId) || null,
