@@ -358,7 +358,7 @@ function RegisterPageContent() {
     patientAge >= 0 &&
     patientAge <= 120;
 
-  const issueToken = async () => {
+  const proceedToPaymentOrConfirm = async () => {
     setLoading(true); setError("");
     try {
       const staffRoles = ["hospital_admin", "hospital_staff", "doctor", "service"];
@@ -367,9 +367,7 @@ function RegisterPageContent() {
         setLoading(false);
         return;
       }
-      const name = patientName.trim();
       const age = patientAge;
-      const mobile = digitsOnly(phone);
       const fee = consultationFee(
         serviceType,
         visitType,
@@ -385,6 +383,28 @@ function RegisterPageContent() {
           setLoading(false);
           return;
         }
+        if (needsPaymentStep("doctor", appointmentDate)) {
+          setPaymentStatus("pending");
+          setStep("payment");
+        } else {
+          await finalizeAppointmentBooking("skipped");
+        }
+      } else if (serviceType === "scan" && selMachine) {
+        setPaymentStatus("pending");
+        setStep("payment");
+      }
+    } catch (e) { setError(e instanceof Error ? e.message : "Failed"); }
+    finally { setLoading(false); }
+  };
+
+  const finalizeAppointmentBooking = async (pStatus: PaymentStatus) => {
+    setLoading(true); setError("");
+    try {
+      const name = patientName.trim();
+      const age = patientAge;
+      const mobile = digitsOnly(phone);
+      if (serviceType === "doctor" && selDoctor) {
+        const effective = suggestPriority(age, priority);
         const a = await api.createAppointment({
           doctor_external_id: selDoctor.external_id,
           patient_name: name,
@@ -399,38 +419,22 @@ function RegisterPageContent() {
         setToken(a.token); setTicketRef(a.public_token); setIsScan(false);
         setIssuedPriority((a.priority as Priority) || effective);
         setPaymentRef(mockPaymentRef(a.id));
-        try {
-          setIssuedEta(await api.eta(a.id));
-        } catch {
-          setIssuedEta(null);
-        }
-        if (needsPaymentStep("doctor", appointmentDate)) {
-          setPaymentStatus("pending");
-          setStep("payment");
-        } else {
-          setPaymentStatus("skipped");
-          setStep("confirm");
-        }
+        try { setIssuedEta(await api.eta(a.id)); } catch { setIssuedEta(null); }
       } else if (serviceType === "scan" && selMachine) {
         const a = await api.createScanAppointment({ machine_external_id: selMachine.external_id, patient_name: name, age });
         setToken(a.token); setTicketRef(a.public_token); setIsScan(true);
         setIssuedPriority("normal");
         setPaymentRef(mockPaymentRef(a.id));
-        try {
-          setIssuedEta(await api.scanEta(a.id));
-        } catch {
-          setIssuedEta(null);
-        }
-        setPaymentStatus("pending");
-        setStep("payment");
+        try { setIssuedEta(await api.scanEta(a.id)); } catch { setIssuedEta(null); }
       }
-    } catch (e) { setError(e instanceof Error ? e.message : "Failed"); }
-    finally     { setLoading(false); }
+      setPaymentStatus(pStatus);
+      setStep("confirm");
+    } catch (e) { setError(e instanceof Error ? e.message : "Failed to create appointment"); }
+    finally { setLoading(false); }
   };
 
-  const finishPayment = (status: PaymentStatus) => {
-    setPaymentStatus(status);
-    setStep("confirm");
+  const finishPayment = async (status: PaymentStatus) => {
+    await finalizeAppointmentBooking(status);
   };
 
   const reset = () => {
@@ -817,7 +821,7 @@ function RegisterPageContent() {
 
                 <div style={{ display: "flex", gap: 12, marginTop: 28, justifyContent: "flex-end" }}>
                   <button className="btn btn-ghost" onClick={() => setStep("patient")}>← Back to Patient</button>
-                  <button className="btn btn-primary" style={{ minWidth: 180 }} disabled={loading || (serviceType === "doctor" ? !canIssueDoctor : !selMachine)} onClick={issueToken}>
+                  <button className="btn btn-primary" style={{ minWidth: 180 }} disabled={loading || (serviceType === "doctor" ? !canIssueDoctor : !selMachine)} onClick={proceedToPaymentOrConfirm}>
                     {loading ? "Booking…" : showPaymentStep ? "Book & Continue →" : "Issue Token →"}
                   </button>
                 </div>
