@@ -91,7 +91,6 @@ from app.services.hospital_ref import resolve_hospital
 from app.services.queue import apply_event, create_appointment
 from app.services.scan_eta import predict_scan_duration, record_scan_duration, recompute_scan_queue_etas
 from app.services.reception_board import build_reception_board, format_work_days, parse_work_days, works_today
-from app.services.seed import clear_bootstrap_samples, seed_database, seed_insights_demo
 from app.services.self_checkin import (
     checkin_url_for_hospital,
     find_patient_by_phone,
@@ -574,29 +573,7 @@ def opd_summary(
     )
 
 
-@router.post("/v1/admin/seed", response_model=SeedResponse, dependencies=[Depends(require_service)])
-def seed(reset: bool = True, db: Session = Depends(get_db)):
-    if settings.is_production:
-        raise HTTPException(403, "Seed is disabled in production")
-    result = seed_database(db, reset=reset)
-    ensure_bootstrap_users(db)
-    return SeedResponse(**result)
 
-
-@router.post(
-    "/v1/admin/seed-insights/{hospital_ref}",
-    dependencies=[Depends(require_service)],
-)
-def seed_insights(hospital_ref: str, days: int = 21, db: Session = Depends(get_db)):
-    if settings.is_production:
-        raise HTTPException(403, "Seed insights is disabled in production")
-    if not 7 <= days <= 90:
-        raise HTTPException(400, "days must be between 7 and 90")
-    hospital = _resolve_hospital(hospital_ref, db)
-    try:
-        return seed_insights_demo(db, hospital, days=days)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
 
 
 def _doctor_out(db: Session, d: Doctor) -> DoctorOut:
@@ -1318,12 +1295,9 @@ def appointment_eta(
     dependencies=[Depends(require_service)],
 )
 def start_training(fast: bool = False, db: Session = Depends(get_db)):
-    # Ensure hospitals/doctors exist — never wipe live patient queues
     doctors = db.execute(select(Doctor).limit(1)).scalar_one_or_none()
     if not doctors:
-        seed_database(db, reset=False)
-    # Only clear previous bootstrap training samples (keep appointments/queues)
-    clear_bootstrap_samples(db)
+        raise HTTPException(400, "No doctors registered in hospital catalog")
     job = create_train_job(db)
     # UI demo: fast=false (~1 min). E2E: fast=true
     run_bootstrap_training.delay(job.id, fast=fast)
