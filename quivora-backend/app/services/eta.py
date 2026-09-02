@@ -94,6 +94,7 @@ def remaining_for_in_progress(appt: Appointment, predicted: int, now: datetime) 
 
 
 def recompute_doctor_queue_etas(db: Session, doctor_id: int) -> None:
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
     from app.models import Doctor as DoctorModel, Hospital, SLOT_ORDER
     from app.services.queue import session_day_bounds_utc
 
@@ -134,10 +135,21 @@ def recompute_doctor_queue_etas(db: Session, doctor_id: int) -> None:
         ),
     )
 
+    # Pre-fetch existing predictions in one query to check prev_ahead safely
+    appt_ids = [a.id for a in appts]
+    existing_preds: dict[int, Prediction] = {}
+    if appt_ids:
+        rows = db.execute(
+            select(Prediction).where(Prediction.appointment_id.in_(appt_ids))
+        ).scalars().all()
+        existing_preds = {p.appointment_id: p for p in rows}
+
     # Group by slot — each slot is its own queue (preserve priority order within slot)
     by_slot: dict[str, list] = {}
     for appt in appts:
         by_slot.setdefault(appt.slot or "morning", []).append(appt)
+
+    upsert_rows: list[dict] = []
 
     for slot, slot_appts in by_slot.items():
         # ETAs when doctor is live for this slot (break adds extra wait, does not hide ETAs)
@@ -175,18 +187,17 @@ def recompute_doctor_queue_etas(db: Session, doctor_id: int) -> None:
 
             # Projected ETA from queue position even when session not live yet
             eta_at = now + timedelta(seconds=max(0, int(eta_wait)))
-            pred_row = db.execute(
-                select(Prediction).where(Prediction.appointment_id == appt.id)
-            ).scalar_one_or_none()
+            pred_row = existing_preds.get(appt.id)
             prev_ahead = pred_row.patients_ahead if pred_row else None
-            if not pred_row:
-                pred_row = Prediction(appointment_id=appt.id)
-                db.add(pred_row)
-            pred_row.eta_at = eta_at
-            pred_row.confidence_min = conf
-            pred_row.patients_ahead = ahead
-            pred_row.wait_seconds = eta_wait
-            pred_row.algorithm_version = "v1-weighted-slot"
+
+            upsert_rows.append({
+                "appointment_id": appt.id,
+                "eta_at": eta_at,
+                "confidence_min": conf,
+                "patients_ahead": ahead,
+                "wait_seconds": eta_wait,
+                "algorithm_version": "v1-weighted-slot",
+            })
 
             if (slot_live
                     and prev_ahead is not None
@@ -229,6 +240,21 @@ def recompute_doctor_queue_etas(db: Session, doctor_id: int) -> None:
                 cumulative = remaining_for_in_progress(appt, pred, now)
             else:
                 cumulative += pred
+
+    if upsert_rows:
+        stmt = pg_insert(Prediction).values(upsert_rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["appointment_id"],
+            set_={
+                "eta_at": stmt.excluded.eta_at,
+                "confidence_min": stmt.excluded.confidence_min,
+                "patients_ahead": stmt.excluded.patients_ahead,
+                "wait_seconds": stmt.excluded.wait_seconds,
+                "algorithm_version": stmt.excluded.algorithm_version,
+                "updated_at": func.now(),
+            },
+        )
+        db.execute(stmt)
 
     db.commit()
 

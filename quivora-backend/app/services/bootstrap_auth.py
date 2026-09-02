@@ -29,6 +29,13 @@ def ensure_bootstrap_users(db: Session) -> None:
         db.commit()
 
     hospitals = db.execute(select(Hospital).order_by(Hospital.id)).scalars().all()
+    if not hospitals:
+        return
+
+    admin_hash = hash_password("Hospital@123")
+    staff_hash = hash_password("Staff@123")
+    doctor_hash = hash_password("Doctor@123")
+
     for h in hospitals:
         slug = _slug(h.external_id)
         admin_email = f"admin-{slug}@quivora.local"
@@ -37,7 +44,7 @@ def ensure_bootstrap_users(db: Session) -> None:
             db.add(User(
                 email=admin_email,
                 name=f"{h.name} Admin",
-                password_hash=hash_password("Hospital@123"),
+                password_hash=admin_hash,
                 role=UserRole.hospital_admin.value,
                 hospital_id=h.id,
                 is_active=True,
@@ -46,7 +53,7 @@ def ensure_bootstrap_users(db: Session) -> None:
             db.add(User(
                 email=staff_email,
                 name=f"{h.name} Reception",
-                password_hash=hash_password("Staff@123"),
+                password_hash=staff_hash,
                 role=UserRole.hospital_staff.value,
                 hospital_id=h.id,
                 is_active=True,
@@ -55,14 +62,12 @@ def ensure_bootstrap_users(db: Session) -> None:
             select(Doctor).where(Doctor.hospital_id == h.id).order_by(Doctor.id).limit(1)
         ).scalars().all()
         for d in doctors:
-            if not d.room_pin_hash and not settings.is_production:
-                d.room_pin_hash = hash_password("1234")
             doc_email = f"doctor-{d.external_id.lower()}@quivora.local"
             if not db.execute(select(User).where(User.email == doc_email)).scalar_one_or_none():
                 db.add(User(
                     email=doc_email,
                     name=d.name,
-                    password_hash=hash_password("Doctor@123"),
+                    password_hash=doctor_hash,
                     role=UserRole.doctor.value,
                     hospital_id=h.id,
                     doctor_id=d.id,
@@ -79,8 +84,9 @@ def ensure_doctor_room_pins(db: Session) -> None:
     doctors = db.execute(select(Doctor).where(Doctor.room_pin_hash.is_(None))).scalars().all()
     if not doctors:
         return
+    pin_hash = hash_password("1234")
     for d in doctors:
-        d.room_pin_hash = hash_password("1234")
+        d.room_pin_hash = pin_hash
     db.commit()
 
 

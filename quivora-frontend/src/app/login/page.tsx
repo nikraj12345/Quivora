@@ -94,7 +94,7 @@ function LoginForm() {
           </button>
         </form>
 
-        <div className="login-hints">
+        {/* <div className="login-hints">
           <p><strong>Demo accounts</strong> (after seed)</p>
           <ul>
             <li>Platform admin — <code>admin@quivora.local</code> / <code>Quivora@123</code></li>
@@ -102,7 +102,7 @@ function LoginForm() {
             <li>Reception — <code>staff-hosp001@quivora.local</code> / <code>Staff@123</code></li>
             <li>Doctor room PIN — <code>1234</code> on room tablet</li>
           </ul>
-        </div>
+        </div> */}
       </div>
     </div>
   );

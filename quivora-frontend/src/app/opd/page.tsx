@@ -109,12 +109,23 @@ export default function OpdPage() {
     const load = async () => {
       try {
         const docs = await api.doctors(selectedId);
-        const entries = await Promise.all(
-          docs.map(async (d) => [d.external_id, await api.queue(d.external_id)] as const)
-        );
         if (cancelled) return;
         setDoctors(docs);
-        setQueues(Object.fromEntries(entries));
+
+        // Batch queue requests in concurrency chunks of 5 to keep requests smooth
+        const chunkSize = 5;
+        const entries: [string, QueueItem[]][] = [];
+        for (let i = 0; i < docs.length; i += chunkSize) {
+          if (cancelled) return;
+          const chunk = docs.slice(i, i + chunkSize);
+          const chunkResults = await Promise.all(
+            chunk.map(async (d) => [d.external_id, await api.queue(d.external_id)] as const)
+          );
+          entries.push(...chunkResults);
+          if (!cancelled) {
+            setQueues((prev) => ({ ...prev, ...Object.fromEntries(chunkResults) }));
+          }
+        }
       } catch {
         if (!cancelled) {
           setDoctors([]);
@@ -123,7 +134,7 @@ export default function OpdPage() {
       }
     };
     load();
-    const t = setInterval(load, 8000);
+    const t = setInterval(load, 12000);
     return () => {
       cancelled = true;
       clearInterval(t);

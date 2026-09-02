@@ -373,6 +373,14 @@ def seed_appointments(db, hospitals, doctors, patients):
         token_tracker[key] = token_tracker.get(key, 0) + 1
         return token_tracker[key]
 
+    def get_doc_slots(doc):
+        raw = getattr(doc, "slots", None)
+        if isinstance(raw, list):
+            return raw
+        if isinstance(raw, str) and raw:
+            return [s.strip() for s in raw.split(",") if s.strip()]
+        return ["morning", "afternoon"]
+
     def make_apt(h, doc, pat, status, scheduled_at, started_at=None, ended_at=None):
         nonlocal apt_counter
         # Senior priority only for age >= 60
@@ -384,7 +392,9 @@ def seed_appointments(db, hospitals, doctors, patients):
         apt_type = rng.choices(
             [AppointmentType.new, AppointmentType.follow_up], weights=[65, 35]
         )[0]
-        slot = _slot_for_hour(scheduled_at.hour)
+        # Match doctor's working slots
+        valid_slots = get_doc_slots(doc)
+        slot = rng.choice(valid_slots) if valid_slots else _slot_for_hour(scheduled_at.hour)
         tok = get_token_for_slot_and_date(doc.id, slot, scheduled_at)
         a = Appointment(
             hospital_id=h.id,

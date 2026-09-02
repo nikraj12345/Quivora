@@ -1188,10 +1188,23 @@ def doctor_queue(
         ),
     )
 
+    # Bulk-fetch all predictions for these appointments in a single query
+    appt_ids = [a.id for a in appts]
+    pred_map: dict[int, Prediction] = {}
+    if appt_ids:
+        p_rows = db.execute(select(Prediction).where(Prediction.appointment_id.in_(appt_ids))).scalars().all()
+        pred_map = {p.appointment_id: p for p in p_rows}
+
+    # Cache predicted duration by age_band to avoid re-querying duration samples repeatedly
+    duration_cache: dict[str, int] = {}
+
     items = []
     for a in appts:
-        pred_sec, _ = predict_duration_sec(db, doctor_id, a.age_band)
-        pred = db.execute(select(Prediction).where(Prediction.appointment_id == a.id)).scalar_one_or_none()
+        if a.age_band not in duration_cache:
+            p_sec, _ = predict_duration_sec(db, doctor_id, a.age_band)
+            duration_cache[a.age_band] = p_sec
+        pred_sec = duration_cache[a.age_band]
+        pred = pred_map.get(a.id)
         items.append(
             QueueItemOut(
                 appointment_id=a.id,
