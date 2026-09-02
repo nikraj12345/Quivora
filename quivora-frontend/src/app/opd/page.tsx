@@ -119,7 +119,7 @@ export default function OpdPage() {
           if (cancelled) return;
           const chunk = docs.slice(i, i + chunkSize);
           const chunkResults = await Promise.all(
-            chunk.map(async (d) => [d.external_id, await api.queue(d.external_id)] as const)
+            chunk.map(async (d): Promise<[string, QueueItem[]]> => [d.external_id, await api.queue(d.external_id)])
           );
           entries.push(...chunkResults);
           if (!cancelled) {
