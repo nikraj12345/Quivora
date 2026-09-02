@@ -54,6 +54,7 @@ export function Shell({ children, title, subtitle }: { children: ReactNode; titl
         label: "Today",
         links: [
           { href: "/opd", label: "Doctor Management" },
+          { href: "/scans", label: "Scan Management" },
           { href: hid ? `/register?hospital=${hid}&source=hospital` : "/register", label: "Register" },
           { href: "/insights", label: "Insights" },
         ],
@@ -61,7 +62,6 @@ export function Shell({ children, title, subtitle }: { children: ReactNode; titl
       {
         label: "More",
         links: [
-          { href: "/scans", label: "Scan Management" },
           { href: hid ? `/hospital/${hid}` : "/hospital", label: "Hospital" },
         ],
       },
