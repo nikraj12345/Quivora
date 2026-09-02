@@ -51,6 +51,8 @@ def predict_scan_duration(db: Session, machine_id: int, scan_type: str, age_band
 
 
 def recompute_scan_queue_etas(db: Session, machine_id: int) -> None:
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     machine = db.get(ScanMachine, machine_id)
     machine_live = machine.is_live if machine else False
 
@@ -64,8 +66,32 @@ def recompute_scan_queue_etas(db: Session, machine_id: int) -> None:
         .order_by(ScanAppointment.id)
     ).scalars().all()
 
+    # Pre-load all existing predictions for this machine's active appointments in one query
+    appt_ids = [a.id for a in appts]
+    existing_preds: dict[int, ScanPrediction] = {}
+    if appt_ids:
+        rows = db.execute(
+            select(ScanPrediction).where(ScanPrediction.scan_appointment_id.in_(appt_ids))
+        ).scalars().all()
+        existing_preds = {p.scan_appointment_id: p for p in rows}
+
     now = datetime.now(timezone.utc)
     eta_wait = 0.0
+
+    # Variance / confidence — compute once per machine call
+    samples = db.execute(
+        select(ScanDurationSample.duration_sec).where(
+            ScanDurationSample.machine_id == machine_id
+        ).order_by(ScanDurationSample.id.desc()).limit(20)
+    ).scalars().all()
+    if len(samples) >= 2:
+        mean = sum(samples) / len(samples)
+        variance = sum((s - mean) ** 2 for s in samples) / len(samples)
+        confidence_min = round((variance ** 0.5) / 60, 1)
+    else:
+        confidence_min = 5.0
+
+    upsert_rows: list[dict] = []
 
     for appt in appts:
         pred_sec = predict_scan_duration(db, machine_id, machine.scan_type.value, appt.age_band)
@@ -83,40 +109,9 @@ def recompute_scan_queue_etas(db: Session, machine_id: int) -> None:
 
         eta_at = (now + timedelta(seconds=eta_wait)) if machine_live else None
 
-        # Variance for confidence band
-        samples = db.execute(
-            select(ScanDurationSample.duration_sec).where(
-                ScanDurationSample.machine_id == machine_id
-            ).order_by(ScanDurationSample.id.desc()).limit(20)
-        ).scalars().all()
-        if len(samples) >= 2:
-            mean = sum(samples) / len(samples)
-            variance = sum((s - mean) ** 2 for s in samples) / len(samples)
-            confidence_min = (variance ** 0.5) / 60
-        else:
-            confidence_min = 5.0
-
-        pred = db.execute(
-            select(ScanPrediction).where(ScanPrediction.scan_appointment_id == appt.id)
-        ).scalar_one_or_none()
-        prev_ahead = pred.patients_ahead if pred else None
-        if pred:
-            pred.eta_at = eta_at
-            pred.predicted_duration_sec = pred_sec
-            pred.patients_ahead = patients_ahead
-            pred.wait_seconds = int(eta_wait)
-            pred.confidence_min = round(confidence_min, 1)
-        else:
-            db.add(ScanPrediction(
-                scan_appointment_id=appt.id,
-                eta_at=eta_at,
-                predicted_duration_sec=pred_sec,
-                patients_ahead=patients_ahead,
-                wait_seconds=int(eta_wait),
-                confidence_min=round(confidence_min, 1),
-            ))
-
-        # Same 2-level hierarchy as doctor queues
+        # Telegram / SMS notifications using the pre-loaded prediction
+        prev_pred = existing_preds.get(appt.id)
+        prev_ahead = prev_pred.patients_ahead if prev_pred else None
         if (machine_live
                 and prev_ahead is not None
                 and appt.status != ScanStatus.in_progress):
@@ -134,6 +129,30 @@ def recompute_scan_queue_etas(db: Session, machine_id: int) -> None:
                 if appt.telegram_chat_id:
                     notify_next(appt.telegram_chat_id, patient_name, appt.token, machine_name, eta_time, appt.public_token)
                 sms.notify_next(phone, patient_name, appt.token, machine_name, eta_time, public_token=appt.public_token)
+
+        upsert_rows.append({
+            "scan_appointment_id": appt.id,
+            "eta_at": eta_at,
+            "predicted_duration_sec": pred_sec,
+            "patients_ahead": patients_ahead,
+            "wait_seconds": int(eta_wait),
+            "confidence_min": confidence_min,
+        })
+
+    if upsert_rows:
+        stmt = pg_insert(ScanPrediction).values(upsert_rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["scan_appointment_id"],
+            set_={
+                "eta_at": stmt.excluded.eta_at,
+                "predicted_duration_sec": stmt.excluded.predicted_duration_sec,
+                "patients_ahead": stmt.excluded.patients_ahead,
+                "wait_seconds": stmt.excluded.wait_seconds,
+                "confidence_min": stmt.excluded.confidence_min,
+                "updated_at": func.now(),
+            },
+        )
+        db.execute(stmt)
 
     db.commit()
 
