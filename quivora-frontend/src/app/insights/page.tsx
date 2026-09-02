@@ -113,11 +113,11 @@ export default function InsightsPage() {
 
   return (
     <Shell title="Insights" subtitle={data?.hospital_name || hospital?.name || undefined}>
-      {!hid || (hospitals.length > 0 && !hospital) ? (
+      {!hid ? (
         <p className="empty-hint">
           {hospitals.length === 0
             ? "No hospitals found. Run seed first, then pick a hospital from the top-right switcher."
-            : "Selected hospital is outdated. Pick a hospital from the top-right switcher."}
+            : "No hospital selected. Pick a hospital from the top-right switcher."}
         </p>
       ) : (
         <div className={styles.page}>
