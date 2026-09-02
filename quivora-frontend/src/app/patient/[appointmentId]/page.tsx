@@ -88,9 +88,13 @@ export default function PatientPage() {
 
   const fmtCountdown = (sec: number | null) => {
     if (sec === null || sec < 0) return "--:--";
-    if (sec === 0) return "00:00";
-    const m = Math.floor(sec / 60);
+    if (sec === 0) return "00:00:00";
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
     const s = sec % 60;
+    if (h > 0) {
+      return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    }
     return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   };
 
