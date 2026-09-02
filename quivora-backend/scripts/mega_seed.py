@@ -370,7 +370,12 @@ def seed_appointments(db, hospitals, doctors, patients):
 
     def make_apt(h, doc, pat, status, scheduled_at, started_at=None, ended_at=None):
         nonlocal apt_counter
-        priority = rng.choices(PRIORITY_OPTIONS, weights=PRIORITY_WEIGHTS)[0]
+        # Senior priority only for age >= 60
+        if pat.age >= 60:
+            priority = rng.choices(["senior", "emergency", "urgent", "normal"], weights=[40, 5, 15, 40])[0]
+        else:
+            priority = rng.choices(["emergency", "urgent", "normal"], weights=[5, 20, 75])[0]
+
         apt_type = rng.choices(
             [AppointmentType.new, AppointmentType.follow_up], weights=[65, 35]
         )[0]
@@ -439,28 +444,30 @@ def seed_appointments(db, hospitals, doctors, patients):
     flush_batch()
     print(f"     Completed appointments: {completed_count}")
 
-    # --- ACTIVE TODAY ---
-    for _ in range(1500):
-        h = rng.choice(hospitals)
-        docs = doc_by_hosp.get(h.id, [])
-        pats = pat_by_hosp.get(h.id, [])
-        if not docs or not pats:
+    # --- ACTIVE TODAY (Guarantee 2 to 40 per doctor) ---
+    for doc in doctors:
+        h = db.get(Hospital, doc.hospital_id)
+        pats = pat_by_hosp.get(doc.hospital_id, [])
+        if not pats:
             continue
-        doc = rng.choice(docs)
-        pat = rng.choice(pats)
-        sched = _today_dt()
-        status = rng.choices(
-            [AppointmentStatus.checked_in, AppointmentStatus.in_progress, AppointmentStatus.scheduled],
-            weights=[40, 30, 30]
-        )[0]
-        started_at = None
-        if status == AppointmentStatus.in_progress:
-            started_at = TODAY + timedelta(hours=rng.randint(8, 17), minutes=rng.randint(0, 59))
-        apt, _ = make_apt(h, doc, pat, status, sched, started_at)
-        batch.append(apt)
-        active_count += 1
-        if len(batch) >= 300:
-            flush_batch()
+        # Guarantee 2 to 40 appointments for TODAY
+        num_today = rng.randint(2, 40)
+        for i in range(num_today):
+            pat = rng.choice(pats)
+            sched = _today_dt()
+            # First appointment in progress if random choice, rest checked-in/scheduled
+            if i == 0 and rng.random() > 0.5:
+                status = AppointmentStatus.in_progress
+                started_at = TODAY + timedelta(hours=sched.hour, minutes=rng.randint(0, 30))
+            else:
+                status = rng.choices([AppointmentStatus.checked_in, AppointmentStatus.scheduled], weights=[60, 40])[0]
+                started_at = None
+
+            apt, _ = make_apt(h, doc, pat, status, sched, started_at)
+            batch.append(apt)
+            active_count += 1
+            if len(batch) >= 300:
+                flush_batch()
     flush_batch()
     print(f"     Active appointments: {active_count}")
 
