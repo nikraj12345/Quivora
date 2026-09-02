@@ -362,9 +362,11 @@ def seed_appointments(db, hospitals, doctors, patients):
 
     token_tracker = {}
 
-    def next_token(doctor_id):
-        token_tracker[doctor_id] = token_tracker.get(doctor_id, 0) + 1
-        return token_tracker[doctor_id]
+    def get_token_for_slot_and_date(doctor_id, slot, scheduled_at):
+        d_str = scheduled_at.strftime("%Y-%m-%d")
+        key = (doctor_id, slot, d_str)
+        token_tracker[key] = token_tracker.get(key, 0) + 1
+        return token_tracker[key]
 
     def make_apt(h, doc, pat, status, scheduled_at, started_at=None, ended_at=None):
         nonlocal apt_counter
@@ -373,12 +375,13 @@ def seed_appointments(db, hospitals, doctors, patients):
             [AppointmentType.new, AppointmentType.follow_up], weights=[65, 35]
         )[0]
         slot = _slot_for_hour(scheduled_at.hour)
+        tok = get_token_for_slot_and_date(doc.id, slot, scheduled_at)
         a = Appointment(
             hospital_id=h.id,
             external_id=_counter_str("APT-", apt_counter),
             doctor_id=doc.id,
             patient_id=pat.id,
-            token=next_token(doc.id),
+            token=tok,
             appointment_type=apt_type,
             status=status,
             age=pat.age,
@@ -537,9 +540,11 @@ def seed_scan_appointments(db, machine_map, patients):
             pass
 
     scan_token_tracker = {}
-    def next_scan_token(machine_id):
-        scan_token_tracker[machine_id] = scan_token_tracker.get(machine_id, 0) + 1
-        return scan_token_tracker[machine_id]
+    def get_scan_token_for_date(machine_id, scheduled_at):
+        d_str = scheduled_at.strftime("%Y-%m-%d")
+        key = (machine_id, d_str)
+        scan_token_tracker[key] = scan_token_tracker.get(key, 0) + 1
+        return scan_token_tracker[key]
 
     batch = []
     scan_samples = []
@@ -573,7 +578,7 @@ def seed_scan_appointments(db, machine_map, patients):
                 external_id=_counter_str("SCNA-", scan_counter),
                 machine_id=machine.id,
                 patient_id=pat.id,
-                token=next_scan_token(machine.id),
+                token=get_scan_token_for_date(machine.id, sched),
                 age=pat.age,
                 age_band=pat.age_band,
                 status=ScanStatus.completed,
@@ -610,7 +615,7 @@ def seed_scan_appointments(db, machine_map, patients):
                 external_id=_counter_str("SCNA-", scan_counter),
                 machine_id=machine.id,
                 patient_id=pat.id,
-                token=next_scan_token(machine.id),
+                token=get_scan_token_for_date(machine.id, sched),
                 age=pat.age,
                 age_band=pat.age_band,
                 status=status,
@@ -632,7 +637,7 @@ def seed_scan_appointments(db, machine_map, patients):
                 external_id=_counter_str("SCNA-", scan_counter),
                 machine_id=machine.id,
                 patient_id=pat.id,
-                token=next_scan_token(machine.id),
+                token=get_scan_token_for_date(machine.id, sched),
                 age=pat.age,
                 age_band=pat.age_band,
                 status=ScanStatus.scheduled,
