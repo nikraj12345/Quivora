@@ -745,11 +745,8 @@ def nuke_database(db: Session) -> None:
     ]
     from sqlalchemy import text
     with engine.begin() as conn:
-        # Disable FK checks temporarily so TRUNCATE order doesn't matter
-        conn.execute(text("SET session_replication_role = replica"))
-        for table in tables_in_order:
-            conn.execute(text(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE"))
-        conn.execute(text("SET session_replication_role = DEFAULT"))
+        tables_str = ", ".join(tables_in_order)
+        conn.execute(text(f"TRUNCATE TABLE {tables_str} RESTART IDENTITY CASCADE"))
     print(f"     Wiped {len(tables_in_order)} tables. Starting fresh.")
 
 
