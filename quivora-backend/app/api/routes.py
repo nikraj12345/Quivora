@@ -1517,6 +1517,9 @@ def scan_queue(
 ):
     m = _resolve_machine(machine_ref, db)
     assert_hospital_access(principal, m.hospital_id)
+    from app.services.availability import local_today, day_anchor_utc
+    from app.services.queue import session_day_bounds_utc
+
     hospital = db.get(Hospital, m.hospital_id)
     today_date = local_today(hospital)
     when = day_anchor_utc(today_date, hospital)
