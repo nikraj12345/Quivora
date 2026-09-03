@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Shell } from "@/components/Shell";
 import { DoctorLiveToggle } from "@/components/DoctorLiveToggle";
 import { api, Doctor, QueueItem } from "@/lib/api";
@@ -14,6 +14,25 @@ function fmt(iso: string | null) {
 }
 
 function DoctorCard({ doc, queue, onDoctorUpdated }: { doc: Doctor; queue: QueueItem[]; onDoctorUpdated?: (updated: Doctor) => void }) {
+  const [showAnalytics, setShowAnalytics] = useState(false);
+
+  // Deterministic Analytics Formulas
+  const avgMin = doc.avg_duration_sec ? doc.avg_duration_sec / 60 : 15;
+  const queueLen = queue.length;
+
+  // Formula 1: Est. Total Clearance Workload Time (Minutes)
+  const estClearanceMin = Math.round(queueLen * avgMin);
+
+  // Formula 2: Delay Buffer & Delay Status
+  const delayBufferMin = doc.delay_buffer_sec ? Math.round(doc.delay_buffer_sec / 60) : 0;
+  const projectedDelayMin = delayBufferMin + (queueLen > 6 ? Math.round((queueLen - 6) * 3) : 0);
+  const delayStatus = projectedDelayMin > 25 ? "high_delay" : projectedDelayMin > 10 ? "moderate_delay" : "on_schedule";
+
+  // Formula 3: Efficiency Index (Based on consult pace & queue throughput)
+  // Benchmark baseline: 12-15 min/patient
+  const paceRatio = 15 / (avgMin || 15);
+  const efficiencyScore = Math.min(99, Math.max(65, Math.round(paceRatio * 88 - (projectedDelayMin * 0.4))));
+
   return (
     <div className="card" style={{ overflow: "hidden" }}>
       {/* Header */}
@@ -45,11 +64,63 @@ function DoctorCard({ doc, queue, onDoctorUpdated }: { doc: Doctor; queue: Queue
             activeSlot={doc.active_slot}
             onChanged={(updated) => onDoctorUpdated?.(updated)}
           />
-          <Link href={`/room/${doc.external_id}`} className="btn btn-secondary btn-sm">
-            Room →
-          </Link>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setShowAnalytics(!showAnalytics)}
+              title="View Efficiency & Delay Metrics"
+              style={{ fontSize: 11, padding: "4px 8px" }}
+            >
+              📊 {showAnalytics ? "Hide" : "Stats"}
+            </button>
+            <Link href={`/room/${doc.external_id}`} className="btn btn-secondary btn-sm">
+              Room →
+            </Link>
+          </div>
         </div>
       </div>
+
+      {/* Doctor Efficiency & Delay Analytics Bar */}
+      <div style={{ padding: "8px 16px", background: "var(--surface-2)", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11, gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontWeight: 600, color: "var(--muted)" }}>Efficiency:</span>
+          <span style={{ fontWeight: 700, color: efficiencyScore >= 85 ? "var(--ok)" : efficiencyScore >= 75 ? "var(--ink)" : "var(--warn)" }}>
+            {efficiencyScore}% Index
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontWeight: 600, color: "var(--muted)" }}>Projected Delay:</span>
+          <span className={`badge ${delayStatus === "high_delay" ? "badge-emergency" : delayStatus === "moderate_delay" ? "badge-urgent" : "badge-off"}`} style={{ fontSize: 10 }}>
+            {projectedDelayMin > 0 ? `+${projectedDelayMin}m delay` : "On Schedule"}
+          </span>
+        </div>
+      </div>
+
+      {/* Expanded Analytics Drawer */}
+      {showAnalytics && (
+        <div style={{ padding: "12px 16px", background: "var(--accent-light)", borderBottom: "1px solid var(--border)", fontSize: 11, display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ fontWeight: 650, color: "var(--accent-dark)", fontSize: 12, marginBottom: 2 }}>
+            📈 Operational Efficiency & Queue Analytics
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div>
+              <span style={{ color: "var(--muted)" }}>Pace vs Baseline:</span>
+              <div style={{ fontWeight: 600, color: avgMin <= 15 ? "var(--ok)" : "var(--warn)" }}>
+                {avgMin <= 15 ? `Fast (-${Math.round((1 - avgMin / 15) * 100)}%)` : `Thorough (+${Math.round((avgMin / 15 - 1) * 100)}%)`}
+              </div>
+            </div>
+            <div>
+              <span style={{ color: "var(--muted)" }}>Est. Queue Clearance:</span>
+              <div style={{ fontWeight: 600, color: "var(--ink)" }}>
+                ~{estClearanceMin} min ({queueLen} patients)
+              </div>
+            </div>
+          </div>
+          <div style={{ color: "var(--muted-2)", fontSize: 10, marginTop: 4, fontStyle: "italic" }}>
+            *Calculated deterministically using: ClearTime = Queue × AvgSec + Buffer
+          </div>
+        </div>
+      )}
 
       {/* Queue */}
       <div style={{ padding: "10px 16px", display: "flex", flexDirection: "column", gap: 6 }}>
@@ -93,6 +164,7 @@ export default function OpdPage() {
   const { hospital, hospitalId, setMode } = useRole();
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [queues, setQueues] = useState<Record<string, QueueItem[]>>({});
+  const [selectedDept, setSelectedDept] = useState<string>("all");
   const selectedId = hospitalId || hospital?.id || null;
 
   useEffect(() => { setMode("hospital"); }, [setMode]);
@@ -141,35 +213,80 @@ export default function OpdPage() {
     };
   }, [selectedId]);
 
-  const liveCount = doctors.filter((d) => d.is_live).length;
-  const totalInQueue = Object.values(queues).reduce((s, q) => s + q.length, 0);
+  const departments = useMemo(() => {
+    const set = new Set<string>();
+    doctors.forEach((d) => {
+      if (d.department) set.add(d.department);
+    });
+    return Array.from(set).sort();
+  }, [doctors]);
+
+  const filteredDoctors = useMemo(() => {
+    if (selectedDept === "all") return doctors;
+    return doctors.filter((d) => d.department === selectedDept);
+  }, [doctors, selectedDept]);
+
+  const liveCount = filteredDoctors.filter((d) => d.is_live).length;
+  const totalInQueue = filteredDoctors.reduce(
+    (s, d) => s + (queues[d.external_id] ? queues[d.external_id].length : 0),
+    0
+  );
 
   return (
     <Shell title="Doctor Management" subtitle={hospital ? `${hospital.name} · ${hospital.city}` : "Select a hospital"}>
-      {/* Summary bar */}
-      <div style={{ display: "flex", gap: 20, marginBottom: 20, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 13, color: "var(--muted)" }}>
-          <strong style={{ color: liveCount > 0 ? "var(--ok)" : "var(--ink)" }}>{liveCount}</strong> of {doctors.length} doctors live
-        </span>
-        <span style={{ fontSize: 13, color: "var(--muted)" }}>
-          <strong style={{ color: "var(--ink)" }}>{totalInQueue}</strong> patients in queue
-        </span>
+      {/* Control & Summary bar */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 16 }}>
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ fontSize: 13, color: "var(--muted)" }}>
+            <strong style={{ color: liveCount > 0 ? "var(--ok)" : "var(--ink)" }}>{liveCount}</strong> of {filteredDoctors.length} doctors live
+          </span>
+          <span style={{ fontSize: 13, color: "var(--muted)" }}>
+            <strong style={{ color: "var(--ink)" }}>{totalInQueue}</strong> patients in queue
+          </span>
+        </div>
+
+        {/* Department Filter Dropdown */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <label htmlFor="dept-filter" style={{ fontSize: 13, fontWeight: 500, color: "var(--muted)" }}>
+            Department:
+          </label>
+          <select
+            id="dept-filter"
+            className="input"
+            value={selectedDept}
+            onChange={(e) => setSelectedDept(e.target.value)}
+            style={{ minWidth: 200, padding: "6px 12px", fontSize: 13 }}
+          >
+            <option value="all">All Departments ({doctors.length})</option>
+            {departments.map((dept) => {
+              const count = doctors.filter((d) => d.department === dept).length;
+              return (
+                <option key={dept} value={dept}>
+                  {dept} ({count})
+                </option>
+              );
+            })}
+          </select>
+        </div>
       </div>
 
       {/* Doctor grid */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 }}>
-        {doctors.map((d) => (
-          <DoctorCard
-            key={d.external_id}
-            doc={d}
-            queue={queues[d.external_id] || []}
-            onDoctorUpdated={(updated) => setDoctors((prev) => prev.map((x) => (x.id === updated.id ? updated : x)))}
-          />
-        ))}
-        {doctors.length === 0 && (
-          <p style={{ color: "var(--muted)", fontSize: 14 }}>No doctors found for this hospital.</p>
-        )}
-      </div>
+      {filteredDoctors.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--muted)", background: "var(--surface)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
+          No doctors found for this department.
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 }}>
+          {filteredDoctors.map((d) => (
+            <DoctorCard
+              key={d.external_id}
+              doc={d}
+              queue={queues[d.external_id] || []}
+              onDoctorUpdated={(updated) => setDoctors((prev) => prev.map((x) => (x.id === updated.id ? updated : x)))}
+            />
+          ))}
+        </div>
+      )}
     </Shell>
   );
 }

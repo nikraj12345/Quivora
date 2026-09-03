@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Shell } from "@/components/Shell";
 import { api, ScanMachine, ScanQueueItem } from "@/lib/api";
 import { useRole } from "@/lib/role";
@@ -75,6 +75,7 @@ export default function ScansPage() {
   const { hospital, hospitalId, setMode } = useRole();
   const [machines, setMachines] = useState<ScanMachine[]>([]);
   const [queues, setQueues] = useState<Record<string, ScanQueueItem[]>>({});
+  const [selectedScanType, setSelectedScanType] = useState<string>("all");
   const selectedId = hospitalId || hospital?.id || null;
 
   useEffect(() => { setMode("hospital"); }, [setMode]);
@@ -112,42 +113,95 @@ export default function ScansPage() {
     };
   }, [selectedId]);
 
-  const liveCount = machines.filter((m) => m.is_live).length;
+  const availableScanTypes = useMemo(() => {
+    const set = new Set<string>();
+    machines.forEach((m) => {
+      if (m.scan_type) set.add(m.scan_type);
+    });
+    return Array.from(set);
+  }, [machines]);
+
+  const filteredMachines = useMemo(() => {
+    if (selectedScanType === "all") return machines;
+    return machines.filter((m) => m.scan_type === selectedScanType);
+  }, [machines, selectedScanType]);
+
+  const liveCount = filteredMachines.filter((m) => m.is_live).length;
+  const totalWaiting = filteredMachines.reduce(
+    (s, m) => s + (queues[m.external_id] ? queues[m.external_id].length : 0),
+    0
+  );
 
   // Group by scan type for display
-  const scanTypes = [...new Set(machines.map((m) => m.scan_type))];
+  const scanTypes = useMemo(
+    () => [...new Set(filteredMachines.map((m) => m.scan_type))],
+    [filteredMachines]
+  );
 
   return (
     <Shell title="Scan Diagonostics" subtitle={hospital ? `${hospital.name} · ${hospital.city}` : "Select a hospital"}>
-      {/* Summary */}
-      <div style={{ display: "flex", gap: 20, marginBottom: 20 }}>
-        <span style={{ fontSize: 13, color: "var(--muted)" }}>
-          <strong style={{ color: liveCount > 0 ? "var(--ok)" : "var(--ink)" }}>{liveCount}</strong> of {machines.length} machines live
-        </span>
-        <span style={{ fontSize: 13, color: "var(--muted)" }}>
-          <strong style={{ color: "var(--ink)" }}>{Object.values(queues).reduce((s, q) => s + q.length, 0)}</strong> patients waiting
-        </span>
+      {/* Summary and Filter Bar */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 16 }}>
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ fontSize: 13, color: "var(--muted)" }}>
+            <strong style={{ color: liveCount > 0 ? "var(--ok)" : "var(--ink)" }}>{liveCount}</strong> of {filteredMachines.length} machines live
+          </span>
+          <span style={{ fontSize: 13, color: "var(--muted)" }}>
+            <strong style={{ color: "var(--ink)" }}>{totalWaiting}</strong> patients waiting
+          </span>
+        </div>
+
+        {/* Scan Type Filter Dropdown */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <label htmlFor="scan-type-filter" style={{ fontSize: 13, fontWeight: 500, color: "var(--muted)" }}>
+            Scan Type:
+          </label>
+          <select
+            id="scan-type-filter"
+            className="input"
+            value={selectedScanType}
+            onChange={(e) => setSelectedScanType(e.target.value)}
+            style={{ minWidth: 180, padding: "6px 12px", fontSize: 13 }}
+          >
+            <option value="all">All Scan Types ({machines.length})</option>
+            {availableScanTypes.map((type) => {
+              const label = SCAN_LABELS[type]?.label ?? type;
+              const count = machines.filter((m) => m.scan_type === type).length;
+              return (
+                <option key={type} value={type}>
+                  {label} ({count})
+                </option>
+              );
+            })}
+          </select>
+        </div>
       </div>
 
       {/* Scan type sections */}
-      {scanTypes.map((type) => {
-        const typeMachines = machines.filter((m) => m.scan_type === type);
-        const st = SCAN_LABELS[type] ?? { label: type, color: "var(--muted)" };
-        return (
-          <div key={type} style={{ marginBottom: 28 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-              <span style={{ fontWeight: 600, fontSize: 13, color: st.color }}>{st.label}</span>
-              <div style={{ flex: 1, height: 1, background: "var(--border)" }} />
-              <span style={{ fontSize: 12, color: "var(--muted)" }}>{typeMachines.length} machine{typeMachines.length !== 1 ? "s" : ""}</span>
+      {filteredMachines.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--muted)", background: "var(--surface)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
+          No scan machines found for this scan type.
+        </div>
+      ) : (
+        scanTypes.map((type) => {
+          const typeMachines = filteredMachines.filter((m) => m.scan_type === type);
+          const st = SCAN_LABELS[type] ?? { label: type, color: "var(--muted)" };
+          return (
+            <div key={type} style={{ marginBottom: 28 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                <span style={{ fontWeight: 600, fontSize: 13, color: st.color }}>{st.label}</span>
+                <div style={{ flex: 1, height: 1, background: "var(--border)" }} />
+                <span style={{ fontSize: 12, color: "var(--muted)" }}>{typeMachines.length} machine{typeMachines.length !== 1 ? "s" : ""}</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 14 }}>
+                {typeMachines.map((m) => (
+                  <MachineCard key={m.external_id} machine={m} queue={queues[m.external_id] || []} />
+                ))}
+              </div>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 14 }}>
-              {typeMachines.map((m) => (
-                <MachineCard key={m.external_id} machine={m} queue={queues[m.external_id] || []} />
-              ))}
-            </div>
-          </div>
-        );
-      })}
+          );
+        })
+      )}
     </Shell>
   );
 }
