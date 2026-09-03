@@ -1517,12 +1517,22 @@ def scan_queue(
 ):
     m = _resolve_machine(machine_ref, db)
     assert_hospital_access(principal, m.hospital_id)
+    hospital = db.get(Hospital, m.hospital_id)
+    today_date = local_today(hospital)
+    when = day_anchor_utc(today_date, hospital)
+    day_start, day_end = session_day_bounds_utc(hospital, when)
+
     recompute_scan_queue_etas(db, m.id)
     active = [ScanStatus.scheduled, ScanStatus.arrived, ScanStatus.in_progress]
     appts = db.execute(
         select(ScanAppointment)
-        .where(ScanAppointment.machine_id == m.id, ScanAppointment.status.in_(active))
-        .order_by(ScanAppointment.id)
+        .where(
+            ScanAppointment.machine_id == m.id,
+            ScanAppointment.status.in_(active),
+            ScanAppointment.scheduled_at >= day_start,
+            ScanAppointment.scheduled_at < day_end,
+        )
+        .order_by(ScanAppointment.token, ScanAppointment.id)
     ).scalars().all()
     result = []
     for a in appts:
