@@ -62,7 +62,8 @@ export function Shell({ children, title, subtitle }: { children: ReactNode; titl
       {
         label: "More",
         links: [
-          { href: hid ? `/hospital/${hid}` : "/hospital", label: "Hospital" },
+          { href: "/analytics", label: "Analytics" },
+          { href: hid ? `/hospital/${hid}` : "/hospital", label: "Hospital Roster" },
         ],
       },
     ];
@@ -74,6 +75,7 @@ export function Shell({ children, title, subtitle }: { children: ReactNode; titl
     if (linkPath === "/register") return pathname.startsWith("/register");
     if (linkPath === "/doctors") return pathname.startsWith("/doctors");
     if (linkPath === "/insights") return pathname.startsWith("/insights");
+    if (linkPath === "/analytics" || linkPath === "/doctor-analytics") return pathname.startsWith("/analytics") || pathname.startsWith("/doctor-analytics");
     if (linkPath.startsWith("/hospital")) return pathname.startsWith("/hospital");
     if (linkPath === "/admin") return pathname.startsWith("/admin");
     if (linkPath === "/patient-portal") return pathname.startsWith("/patient-portal");
