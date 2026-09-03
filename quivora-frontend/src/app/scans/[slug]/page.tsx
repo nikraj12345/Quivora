@@ -3,25 +3,21 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { Shell } from "@/components/Shell";
+import { LiveBadge } from "@/components/LiveBadge";
 import { api, ScanAppointment, ScanMachine, ScanQueueItem } from "@/lib/api";
 
 const SCAN_LABELS: Record<string, string> = {
   mri: "MRI", ct: "CT", xray: "X-Ray", ultrasound: "Ultrasound", blood_test: "Blood Test",
 };
 
-function LiveBadge({ isLive, liveAt }: { isLive: boolean; liveAt: string | null }) {
-  const since = liveAt
-    ? new Date(liveAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-    : null;
-  return isLive ? (
-    <span className="rounded-full bg-[rgba(31,122,76,0.12)] px-3 py-1 text-xs font-semibold text-[var(--ok)]">
-      ● Live{since ? ` since ${since}` : ""}
-    </span>
-  ) : (
-    <span className="rounded-full bg-[var(--bg-2)] px-3 py-1 text-xs font-semibold text-[var(--muted)]">
-      ● Offline
-    </span>
-  );
+function announceScanPatient(token: number, patientName: string, machineName?: string) {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+  window.speechSynthesis.cancel();
+  const text = `Token number ${token}, ${patientName}, please proceed to ${machineName || "the scan room"}.`;
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = 0.9;
+  utterance.pitch = 1.0;
+  window.speechSynthesis.speak(utterance);
 }
 
 export default function ScanRoomPage() {
@@ -86,6 +82,14 @@ export default function ScanRoomPage() {
         no_show: "Marked no-show",
       };
       setMsg(`${labels[event_type] ?? event_type} · token #${appt.token}`);
+
+      if (event_type === "scan_started") {
+        const targetPatient = queue.find((q) => q.appointment_id === id);
+        if (targetPatient) {
+          announceScanPatient(targetPatient.token, targetPatient.patient_name, machine.name);
+        }
+      }
+
       await refresh();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "Error");
@@ -236,7 +240,15 @@ export default function ScanRoomPage() {
                           : "ETA starts when machine goes live"}
                       </p>
                     </div>
-                    <div className="flex shrink-0 gap-1">
+                    <div className="flex shrink-0 gap:1 gap-1">
+                      <button
+                        className="btn btn-ghost text-xs"
+                        disabled={loading}
+                        title="Voice Callout Patient Name"
+                        onClick={() => announceScanPatient(q.token, q.patient_name, machine?.name)}
+                      >
+                        🔊
+                      </button>
                       {q.status === "scheduled" && (
                         <button className="btn btn-secondary text-xs" disabled={loading} onClick={() => act("arrived", q.appointment_id)}>
                           Arrived

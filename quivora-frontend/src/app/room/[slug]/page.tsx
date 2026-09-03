@@ -33,9 +33,19 @@ function statusBadgeClass(status: string) {
 }
 
 function occupancyFillClass(pct: number) {
-  if (pct >= 90) return "room-occupancy-fill is-full";
-  if (pct >= 70) return "room-occupancy-fill is-high";
+  if (pct >= 100) return "room-occupancy-fill is-full";
+  if (pct >= 85) return "room-occupancy-fill is-high";
   return "room-occupancy-fill";
+}
+
+function announcePatient(token: number, patientName: string, roomTitle?: string) {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+  window.speechSynthesis.cancel();
+  const text = `Token number ${token}, ${patientName}, please report to ${roomTitle || "the consultation room"}.`;
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = 0.9;
+  utterance.pitch = 1.0;
+  window.speechSynthesis.speak(utterance);
 }
 
 export default function RoomPage() {
@@ -161,6 +171,8 @@ export default function RoomPage() {
     finally { setLoading(false); }
   };
 
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+
   const act = async (event_type: string, id: number) => {
     if (!doctor?.is_live) { setMsg("Doctor must be live before recording events."); return; }
     setLoading(true); setMsg("");
@@ -172,6 +184,14 @@ export default function RoomPage() {
         emergency_insert: "Emergency — moved to front",
       };
       setMsg(`${labels[event_type] ?? event_type} · token #${appt.token}`);
+
+      if (voiceEnabled && (event_type === "started" || event_type === "announce")) {
+        const targetPatient = queue.find((q) => q.appointment_id === id);
+        if (targetPatient) {
+          announcePatient(targetPatient.token, targetPatient.patient_name, doctor.name);
+        }
+      }
+
       await refresh();
       if (roomMode === "schedule") await loadSchedule();
     } catch (e) { setMsg(e instanceof Error ? e.message : "Error"); }
@@ -218,7 +238,14 @@ export default function RoomPage() {
             </span>
           </div>
           {isLive && roomMode === "live" && (
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <button
+                className={`btn ${voiceEnabled ? "btn-secondary" : "btn-ghost"} btn-sm`}
+                onClick={() => setVoiceEnabled(!voiceEnabled)}
+                title="Toggle Voice Callout"
+              >
+                {voiceEnabled ? "🔊 Voice Callout ON" : "🔇 Voice Callout OFF"}
+              </button>
               <button className="btn btn-secondary btn-sm" disabled={loading} onClick={toggleBreak}>
                 {onBreak ? "End break" : "Start break"}
               </button>
@@ -427,6 +454,14 @@ export default function RoomPage() {
                         </div>
                       </div>
                       <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          disabled={loading}
+                          title="Voice Callout Patient Name"
+                          onClick={() => announcePatient(q.token, q.patient_name, doctor?.name)}
+                        >
+                          🔊
+                        </button>
                         {idx === 0 && !slotQueue.some((x) => x.status === "in_progress") ? (
                           <button className="btn btn-primary btn-sm" disabled={loading} onClick={() => act("started", q.appointment_id)}>Call in</button>
                         ) : (
