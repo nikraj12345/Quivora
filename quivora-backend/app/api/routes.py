@@ -1248,8 +1248,11 @@ def doctor_queue(
     if target == local_today(hospital):
         recompute_doctor_queue_etas(db, doctor_id)
 
+    from sqlalchemy.orm import selectinload
+
     stmt = (
         select(Appointment)
+        .options(selectinload(Appointment.patient))
         .where(
             Appointment.doctor_id == doctor_id,
             Appointment.status.in_(

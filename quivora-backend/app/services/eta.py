@@ -49,13 +49,32 @@ def predict_duration_sec(
     age_band: str,
     now: Optional[datetime] = None,
 ) -> Tuple[int, float]:
-    """Weighted blend + confidence (minutes as float for ± band)."""
+    """Weighted blend + confidence — optimized single-query execution."""
     now = now or datetime.now(timezone.utc)
-    last_hour = _query_durations(db, doctor_id, age_band, now - timedelta(hours=1))
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    today = _query_durations(db, doctor_id, age_band, today_start)
-    week = _query_durations(db, doctor_id, age_band, now - timedelta(days=7))
-    doctor_all = _query_durations(db, doctor_id, None, now - timedelta(days=7), limit=300)
+    week_ago = now - timedelta(days=7)
+    
+    # Query all duration samples for this doctor from the past week in a single query
+    samples = db.execute(
+        select(DurationSample.duration_sec, DurationSample.age_band, DurationSample.created_at)
+        .where(
+            DurationSample.doctor_id == doctor_id,
+            DurationSample.created_at >= week_ago,
+        )
+        .order_by(DurationSample.created_at.desc())
+        .limit(300)
+    ).all()
+
+    if not samples:
+        pred = float(DEFAULT_DURATION_BY_BAND.get(age_band, 10 * 60))
+        return int(round(pred)), 12.0
+
+    last_hour_strt = now - timedelta(hours=1)
+    today_strt = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    last_hour = [s[0] for s in samples if s[1] == age_band and s[2] >= last_hour_strt]
+    today = [s[0] for s in samples if s[1] == age_band and s[2] >= today_strt]
+    week = [s[0] for s in samples if s[1] == age_band]
+    doctor_all = [s[0] for s in samples]
 
     buckets = [
         (0.45, _avg(last_hour)),
