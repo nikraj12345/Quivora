@@ -76,6 +76,8 @@ export default function ScansPage() {
   const [machines, setMachines] = useState<ScanMachine[]>([]);
   const [queues, setQueues] = useState<Record<string, ScanQueueItem[]>>({});
   const [selectedScanType, setSelectedScanType] = useState<string>("all");
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(6);
   const selectedId = hospitalId || hospital?.id || null;
 
   useEffect(() => { setMode("hospital"); }, [setMode]);
@@ -86,12 +88,10 @@ export default function ScansPage() {
       setQueues({});
       return;
     }
-    setMachines([]);
-    setQueues({});
     let cancelled = false;
     const load = async () => {
       try {
-        const ms = await api.scanMachines(selectedId);
+        const ms = await api.scanMachines(selectedId, pageSize, page * pageSize);
         const entries = await Promise.all(
           ms.map(async (m) => [m.external_id, await api.scanQueue(m.external_id)] as const)
         );
@@ -111,7 +111,7 @@ export default function ScansPage() {
       cancelled = true;
       clearInterval(t);
     };
-  }, [selectedId]);
+  }, [selectedId, page, pageSize]);
 
   const availableScanTypes = useMemo(() => {
     const set = new Set<string>();
@@ -132,14 +132,13 @@ export default function ScansPage() {
     0
   );
 
-  // Group by scan type for display
   const scanTypes = useMemo(
     () => [...new Set(filteredMachines.map((m) => m.scan_type))],
     [filteredMachines]
   );
 
   return (
-    <Shell title="Scan Diagonostics" subtitle={hospital ? `${hospital.name} · ${hospital.city}` : "Select a hospital"}>
+    <Shell title="Scan Diagnostics" subtitle={hospital ? `${hospital.name} · ${hospital.city}` : "Select a hospital"}>
       {/* Summary and Filter Bar */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 16 }}>
         <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "center" }}>
@@ -180,7 +179,7 @@ export default function ScansPage() {
       {/* Scan type sections */}
       {filteredMachines.length === 0 ? (
         <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--muted)", background: "var(--surface)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
-          No scan machines found for this scan type.
+          No scan machines found on this page.
         </div>
       ) : (
         scanTypes.map((type) => {
@@ -202,6 +201,59 @@ export default function ScansPage() {
           );
         })
       )}
+
+      {/* Pagination Controls with Page Input & Page Size Dropdown */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 24, flexWrap: "wrap", gap: 12, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 13, color: "var(--muted)" }}>Per page:</span>
+          <select
+            className="input"
+            style={{ padding: "4px 8px", fontSize: 13 }}
+            value={pageSize}
+            onChange={(e) => {
+              setPageSize(Number(e.target.value));
+              setPage(0);
+            }}
+          >
+            <option value={6}>6 machines</option>
+            <option value={12}>12 machines</option>
+            <option value={24}>24 machines</option>
+          </select>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button
+            className="btn btn-secondary btn-sm"
+            disabled={page === 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+          >
+            ← Previous
+          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+            <span>Page</span>
+            <input
+              type="number"
+              min={1}
+              className="input"
+              style={{ width: 54, textAlign: "center", padding: "4px 6px", fontSize: 13 }}
+              value={page + 1}
+              onChange={(e) => {
+                const val = parseInt(e.target.value, 10);
+                if (!isNaN(val) && val >= 1) {
+                  setPage(val - 1);
+                }
+              }}
+            />
+          </div>
+          <button
+            className="btn btn-secondary btn-sm"
+            disabled={machines.length < pageSize}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            Next →
+          </button>
+        </div>
+      </div>
     </Shell>
   );
 }

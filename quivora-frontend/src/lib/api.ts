@@ -455,7 +455,8 @@ export const api = {
   deleteDepartment: (hospitalRef: string | number, departmentId: number) =>
     request<{ ok: boolean }>(`/v1/hospitals/${hospitalRef}/departments/${departmentId}`, { method: "DELETE" }),
   seed: () => request<{ hospital: string; doctors: number; patients: number; message: string }>("/v1/admin/seed?reset=true", { method: "POST" }),
-  doctors: (hospital_id?: number) => request<Doctor[]>(`/v1/doctors${hospital_id ? `?hospital_id=${hospital_id}` : ""}`),
+  doctors: (hospital_id?: number, limit = 10, offset = 0) =>
+    request<Doctor[]>(`/v1/doctors?limit=${limit}&offset=${offset}${hospital_id ? `&hospital_id=${hospital_id}` : ""}`),
   doctor: (ref: string | number) => request<Doctor>(`/v1/doctors/${ref}`),
   goLive: (ref: string | number, slot?: string) =>
     request<Doctor>(`/v1/doctors/${ref}/go-live${slot ? `?slot=${encodeURIComponent(slot)}` : ""}`, { method: "POST" }),
@@ -557,7 +558,8 @@ export const api = {
     ),
   appointment: (id: number) => request<Appointment>(`/v1/appointments/${id}`),
   // Scan queue
-  scanMachines: (hospital_id?: number) => request<ScanMachine[]>(`/v1/scans/machines${hospital_id ? `?hospital_id=${hospital_id}` : ""}`),
+  scanMachines: (hospital_id?: number, limit = 10, offset = 0) =>
+    request<ScanMachine[]>(`/v1/scans/machines?limit=${limit}&offset=${offset}${hospital_id ? `&hospital_id=${hospital_id}` : ""}`),
   scanMachine: (ref: string | number) => request<ScanMachine>(`/v1/scans/machines/${ref}`),
   scanGoLive: (ref: string | number) => request<ScanMachine>(`/v1/scans/machines/${ref}/go-live`, { method: "POST" }),
   scanGoOffline: (ref: string | number) => request<ScanMachine>(`/v1/scans/machines/${ref}/go-offline`, { method: "POST" }),

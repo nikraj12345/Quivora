@@ -686,6 +686,8 @@ def _doctor_out(db: Session, d: Doctor, stats_map: Optional[dict] = None) -> Doc
 @router.get("/v1/doctors", response_model=list[DoctorOut])
 def list_doctors(
     hospital_id: Optional[int] = None,
+    limit: int = 10,
+    offset: int = 0,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ):
@@ -702,6 +704,8 @@ def list_doctors(
     stmt = select(Doctor).order_by(Doctor.id)
     if hospital_id:
         stmt = stmt.where(Doctor.hospital_id == hospital_id)
+    if limit > 0:
+        stmt = stmt.limit(min(limit, 100)).offset(max(0, offset))
     doctors = db.execute(stmt).scalars().all()
     if doctors:
         doc_ids = [d.id for d in doctors]
@@ -1498,6 +1502,8 @@ def _resolve_machine(machine_ref: str, db: Session) -> ScanMachine:
 @router.get("/v1/scans/machines", response_model=list[ScanMachineOut])
 def list_machines(
     hospital_id: Optional[int] = None,
+    limit: int = 10,
+    offset: int = 0,
     principal: Principal = Depends(require_staff_read),
     db: Session = Depends(get_db),
 ):
@@ -1507,6 +1513,8 @@ def list_machines(
     stmt = select(ScanMachine).order_by(ScanMachine.id)
     if hospital_id:
         stmt = stmt.where(ScanMachine.hospital_id == hospital_id)
+    if limit > 0:
+        stmt = stmt.limit(min(limit, 100)).offset(max(0, offset))
     machines = db.execute(stmt).scalars().all()
     return [_machine_out(db, m) for m in machines]
 

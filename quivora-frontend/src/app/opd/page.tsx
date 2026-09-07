@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Shell } from "@/components/Shell";
 import { DoctorLiveToggle } from "@/components/DoctorLiveToggle";
-import { api, Doctor, QueueItem } from "@/lib/api";
+import { api, Department, Doctor, QueueItem } from "@/lib/api";
 import { useRole } from "@/lib/role";
 import { formatSlotsList, slotShort } from "@/lib/slots";
 
@@ -16,7 +16,6 @@ function fmt(iso: string | null) {
 function DoctorCard({ doc, queue, onDoctorUpdated }: { doc: Doctor; queue: QueueItem[]; onDoctorUpdated?: (updated: Doctor) => void }) {
   const avgMin = doc.avg_duration_sec ? doc.avg_duration_sec / 60 : 15;
   const queueLen = queue.length;
-  const estClearanceMin = Math.round(queueLen * avgMin);
 
   return (
     <div className="card" style={{ overflow: "hidden" }}>
@@ -96,11 +95,23 @@ function DoctorCard({ doc, queue, onDoctorUpdated }: { doc: Doctor; queue: Queue
 export default function OpdPage() {
   const { hospital, hospitalId, setMode } = useRole();
   const [doctors, setDoctors] = useState<Doctor[]>([]);
+  const [departments, setDepartments] = useState<Department[]>([]);
   const [queues, setQueues] = useState<Record<string, QueueItem[]>>({});
   const [selectedDept, setSelectedDept] = useState<string>("all");
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(6);
   const selectedId = hospitalId || hospital?.id || null;
 
   useEffect(() => { setMode("hospital"); }, [setMode]);
+
+  // Load database departments list directly from hospital departments table
+  useEffect(() => {
+    if (!selectedId) {
+      setDepartments([]);
+      return;
+    }
+    api.departments(selectedId).then(setDepartments).catch(() => setDepartments([]));
+  }, [selectedId]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -108,28 +119,19 @@ export default function OpdPage() {
       setQueues({});
       return;
     }
-    setDoctors([]);
-    setQueues({});
     let cancelled = false;
     const load = async () => {
       try {
-        const docs = await api.doctors(selectedId);
+        const docs = await api.doctors(selectedId, pageSize, page * pageSize);
         if (cancelled) return;
         setDoctors(docs);
 
-        // Batch queue requests in concurrency chunks of 5 to keep requests smooth
-        const chunkSize = 5;
-        const entries: [string, QueueItem[]][] = [];
-        for (let i = 0; i < docs.length; i += chunkSize) {
-          if (cancelled) return;
-          const chunk = docs.slice(i, i + chunkSize);
-          const chunkResults = await Promise.all(
-            chunk.map(async (d): Promise<[string, QueueItem[]]> => [d.external_id, await api.queue(d.external_id)])
-          );
-          entries.push(...chunkResults);
-          if (!cancelled) {
-            setQueues((prev) => ({ ...prev, ...Object.fromEntries(chunkResults) }));
-          }
+        // Fetch queues ONLY for the doctors currently visible on this page!
+        const entries = await Promise.all(
+          docs.map(async (d): Promise<[string, QueueItem[]]> => [d.external_id, await api.queue(d.external_id)])
+        );
+        if (!cancelled) {
+          setQueues(Object.fromEntries(entries));
         }
       } catch {
         if (!cancelled) {
@@ -144,19 +146,11 @@ export default function OpdPage() {
       cancelled = true;
       clearInterval(t);
     };
-  }, [selectedId]);
-
-  const departments = useMemo(() => {
-    const set = new Set<string>();
-    doctors.forEach((d) => {
-      if (d.department) set.add(d.department);
-    });
-    return Array.from(set).sort();
-  }, [doctors]);
+  }, [selectedId, page, pageSize]);
 
   const filteredDoctors = useMemo(() => {
     if (selectedDept === "all") return doctors;
-    return doctors.filter((d) => d.department === selectedDept);
+    return doctors.filter((d) => d.department.toLowerCase() === selectedDept.toLowerCase());
   }, [doctors, selectedDept]);
 
   const liveCount = filteredDoctors.filter((d) => d.is_live).length;
@@ -178,7 +172,7 @@ export default function OpdPage() {
           </span>
         </div>
 
-        {/* Department Filter Dropdown */}
+        {/* Department Filter Dropdown - loaded directly from DB departments table */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <label htmlFor="dept-filter" style={{ fontSize: 13, fontWeight: 500, color: "var(--muted)" }}>
             Department:
@@ -190,15 +184,12 @@ export default function OpdPage() {
             onChange={(e) => setSelectedDept(e.target.value)}
             style={{ minWidth: 200, padding: "6px 12px", fontSize: 13 }}
           >
-            <option value="all">All Departments ({doctors.length})</option>
-            {departments.map((dept) => {
-              const count = doctors.filter((d) => d.department === dept).length;
-              return (
-                <option key={dept} value={dept}>
-                  {dept} ({count})
-                </option>
-              );
-            })}
+            <option value="all">All Departments</option>
+            {departments.map((dept) => (
+              <option key={dept.id} value={dept.name}>
+                {dept.name}
+              </option>
+            ))}
           </select>
         </div>
       </div>
@@ -206,7 +197,7 @@ export default function OpdPage() {
       {/* Doctor grid */}
       {filteredDoctors.length === 0 ? (
         <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--muted)", background: "var(--surface)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
-          No doctors found for this department.
+          No doctors found on this page.
         </div>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 }}>
@@ -220,6 +211,59 @@ export default function OpdPage() {
           ))}
         </div>
       )}
+
+      {/* Pagination Controls with Page Selector */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 24, flexWrap: "wrap", gap: 12, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 13, color: "var(--muted)" }}>Per page:</span>
+          <select
+            className="input"
+            style={{ padding: "4px 8px", fontSize: 13 }}
+            value={pageSize}
+            onChange={(e) => {
+              setPageSize(Number(e.target.value));
+              setPage(0);
+            }}
+          >
+            <option value={6}>6 doctors</option>
+            <option value={12}>12 doctors</option>
+            <option value={24}>24 doctors</option>
+          </select>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button
+            className="btn btn-secondary btn-sm"
+            disabled={page === 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+          >
+            ← Previous
+          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+            <span>Page</span>
+            <input
+              type="number"
+              min={1}
+              className="input"
+              style={{ width: 54, textAlign: "center", padding: "4px 6px", fontSize: 13 }}
+              value={page + 1}
+              onChange={(e) => {
+                const val = parseInt(e.target.value, 10);
+                if (!isNaN(val) && val >= 1) {
+                  setPage(val - 1);
+                }
+              }}
+            />
+          </div>
+          <button
+            className="btn btn-secondary btn-sm"
+            disabled={doctors.length < pageSize}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            Next →
+          </button>
+        </div>
+      </div>
     </Shell>
   );
 }
