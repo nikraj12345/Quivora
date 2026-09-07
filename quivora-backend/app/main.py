@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from app.api.routes import router
 from app.api.auth_routes import router as auth_router
@@ -37,6 +38,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Quivora", version="0.1.0", lifespan=lifespan)
+
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 app.add_middleware(
     CORSMiddleware,
