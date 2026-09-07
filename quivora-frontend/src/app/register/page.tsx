@@ -142,11 +142,23 @@ function resolvedExpectedByLabel(
   appointmentDate?: string,
 ) {
   if (etaAt) return fmtEtaTime(etaAt);
-  if (ahead <= 0 && waitSeconds <= 0) return fmtEtaTime(new Date().toISOString());
+  const baseDate = estExpectedByDate(ahead, avgSec, slot, appointmentDate);
   if (waitSeconds > 0) {
-    return fmtEtaTime(new Date(Date.now() + waitSeconds * 1000).toISOString());
+    const slotKey = slot || "morning";
+    const now = new Date();
+    let slotBase = now;
+    if (appointmentDate && appointmentDate !== localDateString()) {
+      const [y, m, d] = appointmentDate.split("-").map(Number);
+      const hour = SLOT_START_HOUR[slotKey] ?? 9;
+      slotBase = new Date(y, m - 1, d, hour, 0, 0, 0);
+    } else {
+      const slotStart = new Date(now);
+      slotStart.setHours(SLOT_START_HOUR[slotKey] ?? 9, 0, 0, 0);
+      slotBase = slotStart > now ? slotStart : now;
+    }
+    return fmtEtaTime(new Date(slotBase.getTime() + waitSeconds * 1000).toISOString());
   }
-  return fmtEtaTime(estExpectedByDate(ahead, avgSec, slot, appointmentDate).toISOString());
+  return fmtEtaTime(baseDate.toISOString());
 }
 
 function MockPaymentQr({ seed }: { seed: string }) {

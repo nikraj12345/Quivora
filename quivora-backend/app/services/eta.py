@@ -149,11 +149,21 @@ def recompute_doctor_queue_etas(db: Session, doctor_id: int) -> None:
     for appt in appts:
         by_slot.setdefault(appt.slot or "morning", []).append(appt)
 
-    upsert_rows: list[dict] = []
+    from app.services.time_utils import hospital_zone
+
+    SLOT_START_HOUR = {
+        "morning": 9,
+        "afternoon": 13,
+        "evening": 17,
+    }
+
+    tz = hospital_zone(hospital) if hospital else timezone.utc
+    local_now = now.astimezone(tz)
 
     for slot, slot_appts in by_slot.items():
         # ETAs when doctor is live for this slot (break adds extra wait, does not hide ETAs)
         slot_live = doctor_live and (active_slot is None or active_slot == slot)
+        start_hour = SLOT_START_HOUR.get(slot, 9)
         cumulative = 0
         break_extra = 0
         if doctor and doctor.is_on_break and doctor.break_started_at:
@@ -185,8 +195,23 @@ def recompute_doctor_queue_etas(db: Session, doctor_id: int) -> None:
             if appt.status != AppointmentStatus.in_progress:
                 eta_wait += break_extra + delay_extra
 
-            # Projected ETA from queue position even when session not live yet
-            eta_at = now + timedelta(seconds=max(0, int(eta_wait)))
+            # Calculate base start time for the slot/queue based on doctor session timing
+            if appt.scheduled_at:
+                sched_local = appt.scheduled_at.astimezone(tz)
+                slot_start = sched_local.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+            else:
+                slot_start = local_now.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+
+            if slot_live:
+                slot_base = max(local_now, slot_start)
+            else:
+                if local_now < slot_start:
+                    slot_base = slot_start
+                else:
+                    slot_base = local_now
+
+            # Projected ETA from doctor's session timing & queue position
+            eta_at = (slot_base + timedelta(seconds=max(0, int(eta_wait)))).astimezone(timezone.utc)
             pred_row = existing_preds.get(appt.id)
             prev_ahead = pred_row.patients_ahead if pred_row else None
 
