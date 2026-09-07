@@ -16,7 +16,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install Node.js (for Next.js runner), Supervisor (to run processes), and build dependencies
+# Install Node.js, Supervisor, and system build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl build-essential libpq-dev supervisor && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
@@ -31,11 +31,7 @@ RUN pip install --no-cache-dir -r ./backend/requirements.txt
 COPY quivora-backend/ ./backend
 
 # Copy Built Frontend Application
-COPY --from=frontend-builder /app/frontend/public ./frontend/public
-COPY --from=frontend-builder /app/frontend/.next/standalone ./frontend
-COPY --from=frontend-builder /app/frontend/.next/static ./frontend/.next/static
-COPY --from=frontend-builder /app/frontend/package*.json ./frontend/
-COPY --from=frontend-builder /app/frontend/node_modules ./frontend/node_modules
+COPY --from=frontend-builder /app/frontend ./frontend
 
 # Configure Supervisor to run FastAPI on :8100 and Next.js on :3000 (or $PORT)
 RUN mkdir -p /etc/supervisor/conf.d
