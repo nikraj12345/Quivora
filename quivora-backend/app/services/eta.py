@@ -22,6 +22,7 @@ OUTLIER_CAP_SEC = 45 * 60  # for learning only
 
 def _avg(values: List[int]) -> Optional[float]:
     if not values:
+        
         return None
     return float(statistics.mean(values))
 
@@ -159,6 +160,7 @@ def recompute_doctor_queue_etas(db: Session, doctor_id: int) -> None:
 
     tz = hospital_zone(hospital) if hospital else timezone.utc
     local_now = now.astimezone(tz)
+    upsert_rows: list[dict] = []
 
     for slot, slot_appts in by_slot.items():
         # ETAs when doctor is live for this slot (break adds extra wait, does not hide ETAs)
