@@ -18,8 +18,8 @@ function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const nextParam = searchParams.get("next");
-  const [email, setEmail] = useState("admin@quivora.local");
-  const [password, setPassword] = useState("Quivora@123");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -82,12 +82,12 @@ function LoginForm() {
 
         <form onSubmit={onSubmit} className="login-form">
           <label className="input-label">
-            Email
-            <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+            Email or User ID
+            <input className="input" type="text" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="e.g. admin@quivora.local or eastclinic" required />
           </label>
           <label className="input-label">
             Password
-            <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+            <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter password" required />
           </label>
           <button className="btn btn-primary" type="submit" disabled={submitting}>
             {submitting ? "Signing in…" : "Sign in"}
