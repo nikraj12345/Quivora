@@ -645,13 +645,16 @@ def opd_summary(
 
 
 
-def _doctor_out(db: Session, d: Doctor) -> DoctorOut:
-    cnt = db.execute(
-        select(func.count()).select_from(DurationSample).where(DurationSample.doctor_id == d.id)
-    ).scalar() or 0
-    avg = db.execute(
-        select(func.avg(DurationSample.duration_sec)).where(DurationSample.doctor_id == d.id)
-    ).scalar()
+def _doctor_out(db: Session, d: Doctor, stats_map: Optional[dict] = None) -> DoctorOut:
+    if stats_map is not None:
+        cnt, avg = stats_map.get(d.id, (0, None))
+    else:
+        cnt = db.execute(
+            select(func.count()).select_from(DurationSample).where(DurationSample.doctor_id == d.id)
+        ).scalar() or 0
+        avg = db.execute(
+            select(func.avg(DurationSample.duration_sec)).where(DurationSample.doctor_id == d.id)
+        ).scalar()
     hosp = db.get(Hospital, d.hospital_id)
     slots = [s.strip() for s in (d.slots or "morning").split(",") if s.strip()]
     work_days = parse_work_days(getattr(d, "work_days", None))
@@ -700,7 +703,21 @@ def list_doctors(
     if hospital_id:
         stmt = stmt.where(Doctor.hospital_id == hospital_id)
     doctors = db.execute(stmt).scalars().all()
-    return [_doctor_out(db, d) for d in doctors]
+    if doctors:
+        doc_ids = [d.id for d in doctors]
+        stats_rows = db.execute(
+            select(
+                DurationSample.doctor_id,
+                func.count(DurationSample.id),
+                func.avg(DurationSample.duration_sec),
+            )
+            .where(DurationSample.doctor_id.in_(doc_ids))
+            .group_by(DurationSample.doctor_id)
+        ).all()
+        stats_map = {row[0]: (row[1], row[2]) for row in stats_rows}
+    else:
+        stats_map = {}
+    return [_doctor_out(db, d, stats_map) for d in doctors]
 
 
 @router.post("/v1/hospitals/{hospital_ref}/doctors", response_model=DoctorOut, dependencies=[Depends(require_staff_write)])

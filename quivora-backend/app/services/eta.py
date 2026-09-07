@@ -161,6 +161,7 @@ def recompute_doctor_queue_etas(db: Session, doctor_id: int) -> None:
     tz = hospital_zone(hospital) if hospital else timezone.utc
     local_now = now.astimezone(tz)
     upsert_rows: list[dict] = []
+    pred_cache: dict[str, Tuple[int, float]] = {}
 
     for slot, slot_appts in by_slot.items():
         # ETAs when doctor is live for this slot (break adds extra wait, does not hide ETAs)
@@ -176,7 +177,12 @@ def recompute_doctor_queue_etas(db: Session, doctor_id: int) -> None:
         delay_extra = int(getattr(doctor, "delay_buffer_sec", 0) or 0) if doctor else 0
 
         for appt in slot_appts:
-            pred, conf = predict_duration_sec(db, doctor_id, appt.age_band, now)
+            cache_key = f"{doctor_id}:{appt.age_band}"
+            if cache_key in pred_cache:
+                pred, conf = pred_cache[cache_key]
+            else:
+                pred, conf = predict_duration_sec(db, doctor_id, appt.age_band, now)
+                pred_cache[cache_key] = (pred, conf)
             if appt.status == AppointmentStatus.in_progress:
                 wait = remaining_for_in_progress(appt, pred, now)
                 ahead = 0
