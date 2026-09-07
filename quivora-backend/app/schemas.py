@@ -18,6 +18,7 @@ class HospitalOut(BaseModel):
     doctor_count: int = 0
     patient_count: int = 0
     machine_count: int = 0
+    admin_email: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -30,6 +31,13 @@ class HospitalCreate(BaseModel):
     phone: Optional[str] = None
     timezone: str = "Asia/Kolkata"
     external_id: Optional[str] = None
+    admin_email: Optional[str] = None
+    admin_password: Optional[str] = None
+
+
+class HospitalCredentialsIn(BaseModel):
+    admin_email: str
+    admin_password: str
 
 
 class HospitalUpdate(BaseModel):

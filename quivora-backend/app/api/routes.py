@@ -32,8 +32,9 @@ from app.db import get_db
 from app.models import (
     Appointment, Department, Doctor, DoctorOpsEvent, DurationSample, Hospital, Patient,
     Prediction, ScanAppointment, ScanDurationSample, ScanMachine,
-    ScanPrediction, ScanStatus, TrainJob,
+    ScanPrediction, ScanStatus, TrainJob, User, UserRole,
 )
+from app.services.passwords import hash_password
 from app.schemas import (
     AppointmentCreate,
     AppointmentOut,
@@ -49,6 +50,7 @@ from app.schemas import (
     HealthOut,
     HospitalAvailabilityOut,
     HospitalCreate,
+    HospitalCredentialsIn,
     HospitalOut,
     HospitalQrInfoOut,
     HospitalUpdate,
@@ -156,6 +158,11 @@ def health(db: Session = Depends(get_db)):
 
 
 def _hospital_out(db: Session, h: Hospital) -> HospitalOut:
+    admin_user = db.execute(
+        select(User)
+        .where(User.hospital_id == h.id, User.role == UserRole.hospital_admin.value)
+        .order_by(User.id)
+    ).scalars().first()
     return HospitalOut(
         id=h.id,
         external_id=h.external_id,
@@ -168,6 +175,7 @@ def _hospital_out(db: Session, h: Hospital) -> HospitalOut:
         doctor_count=db.execute(select(func.count()).select_from(Doctor).where(Doctor.hospital_id == h.id)).scalar() or 0,
         patient_count=db.execute(select(func.count()).select_from(Patient).where(Patient.hospital_id == h.id)).scalar() or 0,
         machine_count=db.execute(select(func.count()).select_from(ScanMachine).where(ScanMachine.hospital_id == h.id)).scalar() or 0,
+        admin_email=admin_user.email if admin_user else None,
     )
 
 
@@ -210,6 +218,16 @@ def create_hospital(body: HospitalCreate, db: Session = Depends(get_db)):
     existing = db.execute(select(Hospital).where(Hospital.external_id == ext)).scalar_one_or_none()
     if existing:
         raise HTTPException(400, f"Hospital {ext} already exists")
+
+    admin_email = None
+    if body.admin_email:
+        admin_email = body.admin_email.strip().lower()
+        if "@" not in admin_email:
+            admin_email = f"{admin_email}@quivora.local"
+        existing_user = db.execute(select(User).where(User.email == admin_email)).scalar_one_or_none()
+        if existing_user:
+            raise HTTPException(400, f"User ID / Email '{admin_email}' is already registered")
+
     h = Hospital(
         external_id=ext,
         name=body.name.strip(),
@@ -220,6 +238,57 @@ def create_hospital(body: HospitalCreate, db: Session = Depends(get_db)):
         is_active=True,
     )
     db.add(h)
+    db.commit()
+    db.refresh(h)
+
+    if admin_email and body.admin_password:
+        admin_user = User(
+            email=admin_email,
+            name=f"{h.name} Admin",
+            password_hash=hash_password(body.admin_password),
+            role=UserRole.hospital_admin.value,
+            hospital_id=h.id,
+            is_active=True,
+        )
+        db.add(admin_user)
+        db.commit()
+
+    return _hospital_out(db, h)
+
+
+@router.post("/v1/hospitals/{hospital_ref}/credentials", response_model=HospitalOut, dependencies=[Depends(require_platform_admin)])
+def set_hospital_credentials(
+    hospital_ref: str,
+    body: HospitalCredentialsIn,
+    db: Session = Depends(get_db),
+):
+    h = _resolve_hospital(hospital_ref, db)
+    email = body.admin_email.strip().lower()
+    if "@" not in email:
+        email = f"{email}@quivora.local"
+
+    existing_user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    if existing_user and existing_user.hospital_id != h.id:
+        raise HTTPException(400, f"User ID / Email '{email}' is already registered to another user")
+
+    user = db.execute(
+        select(User).where(User.hospital_id == h.id, User.role == UserRole.hospital_admin.value)
+    ).scalars().first()
+
+    if not user:
+        user = existing_user or User(
+            email=email,
+            name=f"{h.name} Admin",
+            role=UserRole.hospital_admin.value,
+            hospital_id=h.id,
+            is_active=True,
+        )
+        db.add(user)
+
+    user.email = email
+    user.password_hash = hash_password(body.admin_password)
+    user.hospital_id = h.id
+    user.is_active = True
     db.commit()
     db.refresh(h)
     return _hospital_out(db, h)

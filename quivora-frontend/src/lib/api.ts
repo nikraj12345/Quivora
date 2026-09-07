@@ -30,6 +30,7 @@ export type Hospital = {
   doctor_count?: number;
   patient_count?: number;
   machine_count?: number;
+  admin_email?: string | null;
 };
 
 export type Department = {
@@ -419,8 +420,10 @@ export const api = {
     request<OpdSummary>(`/v1/opd/summary${hospital_id ? `?hospital_id=${hospital_id}` : ""}`),
   hospitals: () => request<Hospital[]>("/v1/hospitals"),
   hospital: (ref: string | number) => request<Hospital>(`/v1/hospitals/${ref}`),
-  createHospital: (body: { name: string; city: string; address?: string; phone?: string; timezone?: string; external_id?: string }) =>
+  createHospital: (body: { name: string; city: string; address?: string; phone?: string; timezone?: string; external_id?: string; admin_email?: string; admin_password?: string }) =>
     request<Hospital>("/v1/hospitals", { method: "POST", body: JSON.stringify(body) }),
+  setHospitalCredentials: (ref: string | number, body: { admin_email: string; admin_password: string }) =>
+    request<Hospital>(`/v1/hospitals/${ref}/credentials`, { method: "POST", body: JSON.stringify(body) }),
   updateHospital: (ref: string | number, body: Partial<{ name: string; city: string; address: string; phone: string; timezone: string; is_active: boolean }>) =>
     request<Hospital>(`/v1/hospitals/${ref}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteHospital: (ref: string | number) =>
