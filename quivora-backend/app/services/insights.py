@@ -237,10 +237,15 @@ def build_hospital_insights(
     ).scalars().all()
     machine_ids = [m.id for m in machines]
 
+    # Query appointments in SQL directly for the range window instead of loading full history
     all_appts = db.execute(
-        select(Appointment).where(Appointment.hospital_id == hospital.id)
+        select(Appointment).where(
+            Appointment.hospital_id == hospital.id,
+            Appointment.scheduled_at >= since,
+            Appointment.scheduled_at <= now,
+        )
     ).scalars().all()
-    appts = [a for a in all_appts if _in_range(a, since, now)]
+    appts = all_appts
     appointment_ids = [a.id for a in all_appts]
     queue_events = (
         db.execute(
