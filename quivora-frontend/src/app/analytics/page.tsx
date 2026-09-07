@@ -78,37 +78,45 @@ export default function AnalyticsPage() {
       try {
         setLoading(true);
 
-        // Load Doctors & Queues
-        const docs = await api.doctors(selectedId);
-        const docQueueEntries = await Promise.all(
-          docs.map(async (d) => {
-            try {
-              const q = await api.queue(d.external_id);
-              return [d.external_id, q] as const;
-            } catch {
-              return [d.external_id, []] as const;
-            }
-          })
-        );
+        // Fetch Doctors & Scan Machines list first (2 fast requests)
+        const [docs, ms] = await Promise.all([
+          api.doctors(selectedId),
+          api.scanMachines(selectedId),
+        ]);
+        if (cancelled) return;
+        setDoctors(docs);
+        setMachines(ms);
+        setLoading(false);
 
-        // Load Scan Machines & Queues
-        const ms = await api.scanMachines(selectedId);
-        const scanQueueEntries = await Promise.all(
-          ms.map(async (m) => {
-            try {
-              const q = await api.scanQueue(m.external_id);
-              return [m.external_id, q] as const;
-            } catch {
-              return [m.external_id, []] as const;
-            }
-          })
-        );
+        // Chunk doctor queue requests (5 at a time)
+        const chunkSize = 5;
+        for (let i = 0; i < docs.length; i += chunkSize) {
+          if (cancelled) return;
+          const chunk = docs.slice(i, i + chunkSize);
+          const chunkResults = await Promise.all(
+            chunk.map(async (d) => {
+              try { return [d.external_id, await api.queue(d.external_id)] as const; }
+              catch { return [d.external_id, []] as const; }
+            })
+          );
+          if (!cancelled) {
+            setDocQueues((prev) => ({ ...prev, ...Object.fromEntries(chunkResults) }));
+          }
+        }
 
-        if (!cancelled) {
-          setDoctors(docs);
-          setDocQueues(Object.fromEntries(docQueueEntries));
-          setMachines(ms);
-          setScanQueues(Object.fromEntries(scanQueueEntries));
+        // Chunk scan machine queue requests (5 at a time)
+        for (let i = 0; i < ms.length; i += chunkSize) {
+          if (cancelled) return;
+          const chunk = ms.slice(i, i + chunkSize);
+          const chunkResults = await Promise.all(
+            chunk.map(async (m) => {
+              try { return [m.external_id, await api.scanQueue(m.external_id)] as const; }
+              catch { return [m.external_id, []] as const; }
+            })
+          );
+          if (!cancelled) {
+            setScanQueues((prev) => ({ ...prev, ...Object.fromEntries(chunkResults) }));
+          }
         }
       } catch (err) {
         console.error("Failed to load analytics data", err);

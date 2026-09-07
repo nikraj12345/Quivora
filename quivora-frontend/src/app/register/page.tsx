@@ -205,6 +205,7 @@ function RegisterPageContent() {
   const [issuedPriority, setIssuedPriority] = useState<Priority>("normal");
 
   const [serviceType, setServiceType]   = useState<"doctor" | "scan">("doctor");
+  const [searchQuery, setSearchQuery]   = useState<string>("");
   const [doctors, setDoctors]           = useState<Doctor[]>([]);
   const [machines, setMachines]         = useState<ScanMachine[]>([]);
   const [selDoctor, setSelDoctor]       = useState<Doctor | null>(null);
@@ -696,45 +697,72 @@ function RegisterPageContent() {
                       </div>
                     )}
 
+                    {/* Search Bar */}
+                    <div style={{ marginBottom: 14 }}>
+                      <input
+                        className="input"
+                        placeholder={serviceType === "doctor" ? "🔍 Search doctor by name or department..." : "🔍 Search machine or scan type..."}
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        style={{ fontSize: 13, padding: "8px 14px" }}
+                      />
+                    </div>
+
                     <div style={{ maxHeight: 420, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, paddingRight: 4 }}>
-                      {serviceType === "doctor" ? doctors.map((d) => (
-                        <button key={d.id} onClick={() => {
-                          setSelDoctor(d);
-                          setSelSlot(d.slots?.[0] || "morning");
-                        }}
-                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", border: `1.5px solid ${selDoctor?.id === d.id ? "var(--accent)" : "var(--border)"}`, borderRadius: "var(--radius-sm)", background: selDoctor?.id === d.id ? "var(--accent-light)" : "var(--surface)", cursor: "pointer", textAlign: "left", transition: "all 0.15s ease" }}>
-                          <div>
-                            <div style={{ fontWeight: 600, fontSize: 14, color: "var(--ink)" }}>{d.name}</div>
-                            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{d.department}</div>
-                            <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 4 }}>
-                              {formatSlotsList(d.slots)}
-                            </div>
-                            <div style={{ fontSize: 12, color: "var(--accent-dark)", marginTop: 4, fontWeight: 600 }}>
-                              ₹{visitType === "follow_up" ? (d.follow_up_fee ?? 300) : (d.consultation_fee ?? 500)}
-                              {visitType === "follow_up" ? " follow-up" : " new visit"}
-                            </div>
-                          </div>
-                          <div style={{ textAlign: "right", flexShrink: 0 }}>
-                            <span className={d.is_live ? "badge badge-live" : "badge badge-off"}>{d.is_live ? "Live" : "Offline"}</span>
-                            {d.avg_duration_sec && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>avg {Math.round(d.avg_duration_sec / 60)} min</div>}
-                          </div>
-                        </button>
-                      )) : machines.map((m) => (
-                        <button key={m.id} onClick={() => setSelMachine(m)}
-                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", border: `1.5px solid ${selMachine?.id === m.id ? "var(--accent)" : "var(--border)"}`, borderRadius: "var(--radius-sm)", background: selMachine?.id === m.id ? "var(--accent-light)" : "var(--surface)", cursor: "pointer", textAlign: "left", transition: "all 0.15s ease" }}>
-                          <div>
-                            <div style={{ fontWeight: 600, fontSize: 14, color: "var(--ink)" }}>{m.name}</div>
-                            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{SCAN_LABELS[m.scan_type] ?? m.scan_type}</div>
-                            <div style={{ fontSize: 12, color: "var(--accent-dark)", marginTop: 4, fontWeight: 600 }}>
-                              {formatInr(SCAN_FEES[m.scan_type] ?? 1000)}
-                            </div>
-                          </div>
-                          <div style={{ textAlign: "right", flexShrink: 0 }}>
-                            <span className={m.is_live ? "badge badge-live" : "badge badge-off"}>{m.is_live ? "Live" : "Offline"}</span>
-                            {m.avg_duration_sec && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>avg {Math.round(m.avg_duration_sec / 60)} min</div>}
-                          </div>
-                        </button>
-                      ))}
+                      {serviceType === "doctor" ? (
+                        doctors
+                          .filter((d) => {
+                            if (!searchQuery.trim()) return true;
+                            const q = searchQuery.toLowerCase();
+                            return d.name.toLowerCase().includes(q) || d.department.toLowerCase().includes(q);
+                          })
+                          .map((d) => (
+                            <button key={d.id} onClick={() => {
+                              setSelDoctor(d);
+                              setSelSlot(d.slots?.[0] || "morning");
+                            }}
+                              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", border: `1.5px solid ${selDoctor?.id === d.id ? "var(--accent)" : "var(--border)"}`, borderRadius: "var(--radius-sm)", background: selDoctor?.id === d.id ? "var(--accent-light)" : "var(--surface)", cursor: "pointer", textAlign: "left", transition: "all 0.15s ease" }}>
+                              <div>
+                                <div style={{ fontWeight: 600, fontSize: 14, color: "var(--ink)" }}>{d.name}</div>
+                                <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{d.department}</div>
+                                <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 4 }}>
+                                  {formatSlotsList(d.slots)}
+                                </div>
+                                <div style={{ fontSize: 12, color: "var(--accent-dark)", marginTop: 4, fontWeight: 600 }}>
+                                  ₹{visitType === "follow_up" ? (d.follow_up_fee ?? 300) : (d.consultation_fee ?? 500)}
+                                  {visitType === "follow_up" ? " follow-up" : " new visit"}
+                                </div>
+                              </div>
+                              <div style={{ textAlign: "right", flexShrink: 0 }}>
+                                <span className={d.is_live ? "badge badge-live" : "badge badge-off"}>{d.is_live ? "Live" : "Offline"}</span>
+                                {d.avg_duration_sec && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>avg {Math.round(d.avg_duration_sec / 60)} min</div>}
+                              </div>
+                            </button>
+                          ))
+                      ) : (
+                        machines
+                          .filter((m) => {
+                            if (!searchQuery.trim()) return true;
+                            const q = searchQuery.toLowerCase();
+                            return m.name.toLowerCase().includes(q) || m.scan_type.toLowerCase().includes(q);
+                          })
+                          .map((m) => (
+                            <button key={m.id} onClick={() => setSelMachine(m)}
+                              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", border: `1.5px solid ${selMachine?.id === m.id ? "var(--accent)" : "var(--border)"}`, borderRadius: "var(--radius-sm)", background: selMachine?.id === m.id ? "var(--accent-light)" : "var(--surface)", cursor: "pointer", textAlign: "left", transition: "all 0.15s ease" }}>
+                              <div>
+                                <div style={{ fontWeight: 600, fontSize: 14, color: "var(--ink)" }}>{m.name}</div>
+                                <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{SCAN_LABELS[m.scan_type] ?? m.scan_type}</div>
+                                <div style={{ fontSize: 12, color: "var(--accent-dark)", marginTop: 4, fontWeight: 600 }}>
+                                  {formatInr(SCAN_FEES[m.scan_type] ?? 1000)}
+                                </div>
+                              </div>
+                              <div style={{ textAlign: "right", flexShrink: 0 }}>
+                                <span className={m.is_live ? "badge badge-live" : "badge badge-off"}>{m.is_live ? "Live" : "Offline"}</span>
+                                {m.avg_duration_sec && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>avg {Math.round(m.avg_duration_sec / 60)} min</div>}
+                              </div>
+                            </button>
+                          ))
+                      )}
                     </div>
                   </div>
 
@@ -828,11 +856,11 @@ function RegisterPageContent() {
               </div>
             )}
 
-            {step === "payment" && token !== null && (
+            {step === "payment" && (
               <div>
                 <div className="payment-token-banner">
-                  <span>Token reserved</span>
-                  <strong>#{token}</strong>
+                  <span>{token !== null ? "Token reserved" : "Payment step"}</span>
+                  <strong>{token !== null ? `#${token}` : "Pending"}</strong>
                 </div>
 
                 <div className="payment-summary">
